@@ -120,16 +120,6 @@ function reactFiberSubmit(token, markerAttr) {
   };
 }
 
-// Simple main-world click for toggle buttons (no fiber needed)
-function mainWorldAgentClick() {
-  var btn = Array.from(document.querySelectorAll("button[aria-pressed]"))
-    .find(function(b) { return /agent/i.test(b.textContent); });
-  if (!btn) return { ok: false, reason: "Agent button not found" };
-  if (btn.getAttribute("aria-pressed") !== "true") return { ok: true, skipped: true };
-  btn.click();
-  return { ok: true };
-}
-
 /* ── Trusted (CDP-level) clicks and keystrokes ───────────────────────
  * chrome.debugger is the Chrome extension API that synthesizes real browser-level
  * input with isTrusted: true, the same way DevTools or a physical mouse/keyboard does.
@@ -251,15 +241,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type === "TRUSTED_ENTER") {
     if (!tabId) { sendResponse({ ok: false, reason: "no tab id" }); return; }
     debuggerEnter(tabId).then(sendResponse);
-    return true;
-  }
-
-  if (msg?.type === "MAIN_WORLD_AGENT_CLICK") {
-    if (!tabId) { sendResponse({ ok: false, reason: "no tab id" }); return; }
-    chrome.scripting
-      .executeScript({ target: { tabId }, world: "MAIN", func: mainWorldAgentClick })
-      .then(results => sendResponse(results?.[0]?.result || { ok: false, reason: "no result" }))
-      .catch(e => sendResponse({ ok: false, reason: String(e?.message || e) }));
     return true;
   }
 

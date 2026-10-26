@@ -5,9 +5,9 @@ A Chrome (Manifest V3) side-panel extension that automates **bulk image generati
 result, attaches a consistent character reference to every prompt, and auto-downloads the outputs.
 
 It is a heavily modified fork of an extension originally called **ZAPI FLOW**, rebranded and
-extended into **Nexus Flow Pro** (amber + teal theme).
+extended into **Nexus Flow Pro**.
 
-- **Version:** 2.2.4
+- **Version:** 3.0.0
 - **Target site:** `https://labs.google/fx/*` (Google Flow projects)
 - **Type:** Unpacked Chrome extension (Manifest V3, side panel)
 - **No build step.** Plain JS/HTML/CSS. Edit files directly and reload the extension.
@@ -16,22 +16,18 @@ extended into **Nexus Flow Pro** (amber + teal theme).
 
 ## What it does
 
-1. **Prompt queue** — paste many prompts (one per line); it submits them to Google Flow one at a
-   time, waits for each generation to finish, then moves on.
-2. **Character reference image** — attach a reference (e.g. a character design sheet) that is added
-   as an *ingredient* to **every** prompt so the character stays visually consistent across shots.
-   The reference persists across browser restarts (`chrome.storage.local`).
-3. **Auto-download** — each finished image is downloaded automatically.
-4. **Filename naming modes** (dropdown): `Serial` (`01-name.jpg`), `Timestamp`
-   (`00-15-name.jpg`, parsed from a `[mm.ss]` tag at the front of the prompt), or `None`.
-5. **Folder picker** — choose any folder on disk via the File System Access API
-   (`showDirectoryPicker`), or fall back to a subfolder of Downloads.
-6. **Upscale to 2K** (toggle) — before downloading, it drives Flow's download menu and clicks
-   "2K Upscaled" (free tier). Falls back to the normal 1K download if that fails.
-7. **Random delay** between prompts (min/max seconds) to keep the account safe.
-8. **Live connection status** — the bar actually pings the content script, so "Connected" is
-   truthful (not just a URL match). It tells you to hard-refresh the tab or reopen the panel when
-   the content script / side panel context is stale.
+1. **Prompt queue** — paste prompts (one per line) or import a `.txt`. Up to **5** generate at
+   once, submitted **3 s** apart (fixed; not user-configurable). Each row shows its status and
+   has a **Retry** that regenerates that one image and overwrites its saved file.
+2. **Character references** — up to 8 images, attached to **every** prompt so characters stay
+   consistent. **Upload to project** pastes them into the Flow project once; **Hard refresh**
+   reloads the tab so they become selectable. References persist across restarts.
+3. **Auto-save** — each finished image is saved as it completes. File names: `Serial`
+   (`000-name.jpg`), `Timestamp` (`00-15-name.jpg`, from a `[mm.ss]` tag at the start of the
+   line), or prompt text only. Save to a chosen folder (File System Access API) or
+   `Downloads/nexus-flow`.
+4. **Status row** — shows whether the content script on the Flow project tab is actually
+   responding, and whether Flow's Agent mode is on (which blocks starting a run).
 
 ---
 
@@ -46,20 +42,21 @@ nexus-flow-extension/
 │   └── service-worker.js      # MAIN-world React-fiber clicks via chrome.scripting
 ├── sidepanel/
 │   ├── sidepanel.html         # Side panel UI
-│   ├── sidepanel.css          # Amber/teal theme
+│   ├── sidepanel.css          # Warm-neutral theme, light + dark
+│   ├── fonts/                 # Onest + Geist Mono (latin, OFL), bundled
 │   └── sidepanel.js           # UI logic, queue driver, downloads, settings persistence
-└── icons/                     # 16 / 32 / 48 / 128 px Nexus Flow Pro icons
+└── icons/                     # logo.svg + 16 / 32 / 48 / 128 px PNGs rendered from it
 ```
 
 ### Roles
 
 - **`sidepanel.js`** drives the whole run. It loops the prompt queue, and for **each** prompt sends
   a single `FLOW_BATCH_RUN` message to the content script (so it can track per-prompt status,
-  wait for the image, then download). Holds the reference image, naming mode, folder handle, and
-  the upscale toggle. Persists settings (and the reference image) in `chrome.storage.local`.
+  wait for the image, then download). Holds the reference images, naming mode and folder handle.
+  Persists the naming mode and references in `chrome.storage.local`.
 - **`content.js`** runs inside the Flow page. It finds the prompt editor (a Slate/React
   contenteditable), injects text, attaches the reference, clicks Create/submit, waits for the new
-  image, and handles upscale + image fetch. All logs are prefixed `[NEXUSFLOW]`.
+  image, and fetches images for saving. All logs are prefixed `[NEXUSFLOW]`.
 - **`service-worker.js`** performs MAIN-world clicks (React fiber `onClick`) when needed to bypass
   `isTrusted` checks — the content script marks an element and asks the worker to click it.
 - **`selectors.js`** sets `globalThis.FLOW_BATCH_DEFAULT_SELECTORS` (prompt input, submit button,
@@ -71,13 +68,14 @@ nexus-flow-extension/
 
 | Message | Direction | Purpose |
 |---|---|---|
-| `FLOW_BATCH_PING` | panel → content | liveness check for the connection bar |
-| `FLOW_GET_AGENT_MODE` / `FLOW_DISABLE_AGENT_MODE` | panel → content | detect/turn off Flow "Agent" mode (blocks generation) |
-| `FLOW_GET_TILE_COUNT` | panel → content | snapshot of existing `img[alt="Generated image"]` before submitting |
-| `FLOW_BATCH_RUN` | panel → content | submit ONE prompt (`prompts:[text]`, `refImage`, `isFirstPrompt`) |
-| `FLOW_WAIT_GENERATION` | panel → content | resolve when a new image appears or a failure card shows |
-| `NEXUS_FETCH_IMAGE` | panel → content | content fetches a blob/URL and returns base64 (so the panel can write it to the chosen folder) |
-| `NEXUS_UPSCALE_2K` | panel → content | open the image's download menu and click "2K Upscaled" |
+| `FLOW_BATCH_PING` | panel → content | liveness check for the status row |
+| `FLOW_GET_AGENT_MODE` | panel → content | is Flow "Agent" mode on (blocks generation) |
+| `FLOW_PIPELINE_BEGIN` / `FLOW_PIPELINE_END` | panel → content | snapshot existing images and start/stop the finish-order scanner |
+| `FLOW_SUBMIT_ONE` | panel → content | attach references, fill and submit ONE prompt, tag its tile with `jobIndex` |
+| `FLOW_COLLECT_NEXT` | panel → content | resolve with the next finished image (or failure), tagged with its `jobIndex` |
+| `FLOW_LOAD_REFERENCES` | panel → content | paste every reference into the project |
+| `FLOW_BATCH_STOP` | panel → content | abort whatever the content script is doing |
+| `NEXUS_FETCH_IMAGE` | panel → content | fetch an image and return base64 (for writing to a chosen folder) |
 
 ---
 
@@ -100,9 +98,6 @@ Flow uses styled-components (hashed classes like `sc-xxxx`) that change, so targ
 - **Search box (inside picker):** `input[placeholder*="search" i]` — type `reference.png` to filter
   the virtualized list so the reference is guaranteed to render.
 - **"Add to Prompt" confirm button:** button whose text matches `/add to prompt/i`.
-- **Download menu (2K/4K):** opened from a `button[aria-haspopup="dialog"]` whose text includes
-  "Download"; options are `button[role="menuitem"]` — the 2K one's text starts with `2K`
-  (`aria-disabled="false"`), the 4K one is `aria-disabled="true"` on the free tier.
 
 ---
 
@@ -151,13 +146,11 @@ if a step is missed.
 
 ## Use
 
-1. (Optional) **Upload Reference Image** — e.g. a character design sheet. It persists across restarts.
-2. Pick **Name images by** (Serial / Timestamp / None) and a **download folder**.
-3. Toggle **Upscale to 2K** if wanted (downloads then go to the system Downloads folder).
-4. Paste prompts — **one per line**. With Timestamp mode, prefix each line with `[mm.ss]`
+1. (Optional) Add **character references**, click **Upload to project**, then **Hard refresh**.
+2. Pick **File names** (Serial / Timestamp / prompt text only) and where to **Save to**.
+3. Paste prompts — **one per line**. For Timestamp names, start each line with `[mm.ss]`
    (e.g. `[00.15] ...`); the tag is stripped before submitting and used for the filename.
-5. Set the random delay range, click **Start Generation**. Use **Continue** to resume after a
-   stop/failure.
+4. Click **Start**. Use **Continue** to resume after a stop, or **Retry** on any single prompt.
 
 ---
 
@@ -174,9 +167,9 @@ if a step is missed.
 
 ## Current state / known limitations
 
-- ✅ Bulk queue, per-prompt status, random delay, Continue/Stop.
+- ✅ Bulk queue (5 in flight, 3 s apart), per-prompt status and Retry, Continue/Stop.
 - ✅ Reference image: upload-once + re-select from project (search-box method defeats virtualization).
-- ✅ Auto-download with serial/timestamp/none naming; folder picker; 2K upscale toggle.
+- ✅ Auto-save with serial/timestamp/prompt-text naming; folder picker.
 - ✅ Reference image persists across browser restarts.
 - ⚠️ Reference re-selection relies on Flow's current picker DOM (`role="option"`, `alt="reference.png"`,
   "Add to Prompt"). If Google changes the picker, update `findReferenceOption` / `openAssetPicker` /

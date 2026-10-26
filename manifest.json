@@ -28,7 +28,8 @@
    "host_permissions": [
       "https://labs.google/fx/*",
       "https://flow.google.com/*",
-      "https://www.googleapis.com/*"
+      "https://script.google.com/*",
+      "https://script.googleusercontent.com/*"
    ],
    "icons": {
       "128": "icons/icon-128.png",
@@ -45,8 +46,7 @@
       "unlimitedStorage",
       "scripting",
       "downloads",
-      "debugger",
-      "identity"
+      "debugger"
    ],
    "side_panel": {
       "default_path": "sidepanel/sidepanel.html"

@@ -436,6 +436,7 @@ textarea:focus { border-color: var(--line-2); background: var(--surface); }
   background: var(--sunken);
 }
 .dsetup__row { display: flex; gap: 8px; }
+.dsetup > .dsetup__input { width: 100%; flex: none; }
 .dsetup__input {
   flex: 1; min-width: 0; height: 32px; padding: 0 10px;
   border: 1px solid var(--line-2); border-radius: 8px;
@@ -445,17 +446,6 @@ textarea:focus { border-color: var(--line-2); background: var(--surface); }
 }
 .dsetup__input:focus { border-color: var(--text); }
 .dsetup__foot { display: flex; justify-content: space-between; gap: 8px; }
-.copyrow {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px;
-  border: 1px dashed var(--line-2); border-radius: 8px;
-  background: var(--surface);
-}
-.copyrow__text { flex: 1; min-width: 0; font: 11px var(--mono); color: var(--text); overflow-wrap: anywhere; }
-.dclient { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--faint); }
-.dclient__label { flex: none; white-space: nowrap; }
-.dclient__id { font-family: var(--mono); color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dclient .link-btn { margin-left: auto; font-size: 11px; }
 .dlink__input:disabled { opacity: .55; cursor: not-allowed; }
 
 /* ── Run bar ── */

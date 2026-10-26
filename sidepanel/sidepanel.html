@@ -136,33 +136,26 @@
                 <span class="dconn__title" id="driveConnTitle">Google Drive</span>
                 <span class="dconn__sub" id="driveConnSub">Not connected</span>
               </span>
-              <button type="button" class="btn btn--primary btn--sm" id="driveConnectBtn">Connect</button>
+              <button type="button" class="link-btn" id="driveChange" hidden>Change</button>
               <button type="button" class="link-btn" id="driveDisconnect" hidden>Disconnect</button>
             </div>
 
-            <div class="dsetup" id="driveSetup" hidden>
-              <label for="driveClientIdInput" class="label">Google Client ID</label>
+            <div class="dsetup" id="driveSetup">
+              <label for="driveUrlInput" class="label">Uploader link</label>
+              <input type="url" id="driveUrlInput" class="dsetup__input" placeholder="https://script.google.com/macros/s/…/exec"
+                     autocomplete="off" spellcheck="false" />
+              <label for="driveKeyInput" class="label">Key</label>
               <div class="dsetup__row">
-                <input type="text" id="driveClientIdInput" class="dsetup__input" placeholder="1234-abc.apps.googleusercontent.com"
+                <input type="password" id="driveKeyInput" class="dsetup__input" placeholder="The key from the script"
                        autocomplete="off" spellcheck="false" />
-                <button type="button" class="btn btn--primary btn--sm" id="driveClientIdSave">Save</button>
-              </div>
-              <p class="hint">In Google Cloud, create an OAuth client of type <b>Web application</b> and add this <b>Authorized redirect URI</b>:</p>
-              <div class="copyrow">
-                <code class="copyrow__text" id="driveRedirectUri"></code>
-                <button type="button" class="link-btn" id="driveRedirectCopy">Copy</button>
+                <button type="button" class="btn btn--primary btn--sm" id="driveConnectBtn">Connect</button>
               </div>
               <div class="dsetup__foot">
-                <a class="link-btn" href="https://github.com/TheCodedMedic/nexus-flow-pro/blob/main/docs/google-drive-setup.md" target="_blank" rel="noopener">Step-by-step guide</a>
-                <button type="button" class="link-btn" id="driveClientIdCancel" hidden>Cancel</button>
+                <a class="link-btn" href="https://github.com/TheCodedMedic/nexus-flow-pro/blob/main/docs/google-drive-setup.md" target="_blank" rel="noopener">How to make the uploader (3 min)</a>
+                <button type="button" class="link-btn" id="driveSetupCancel" hidden>Cancel</button>
               </div>
               <p class="hint hint--err" id="driveSetupError" role="alert" hidden></p>
             </div>
-
-            <p class="dclient" id="driveClientLine" hidden>
-              <span class="dclient__label">Client ID</span> <span class="dclient__id" id="driveClientIdShort"></span>
-              <button type="button" class="link-btn" id="driveClientIdChange">Change</button>
-            </p>
 
             <div class="dlink" id="driveLinkWrap">
               <input type="url" id="driveLinkInput" class="dlink__input" placeholder="Paste a Google Drive folder link"

@@ -1,5 +1,11 @@
-// Google Drive: sign-in via the Chrome profile's Google account, folder-link checks,
-// and image upload. Loaded before sidepanel.js, which uses the global `Drive`.
+// Google Drive: sign-in, folder-link checks, and image upload. Loaded before
+// sidepanel.js, which uses the global `Drive`.
+//
+// Sign-in uses chrome.identity.launchWebAuthFlow with a "Web application" OAuth client
+// whose ID is entered in the panel (or baked in below), not chrome.identity.getAuthToken:
+// getAuthToken only accepts a client ID written into manifest.json, and only works in
+// Google Chrome. launchWebAuthFlow takes the ID at runtime and works in other Chromium
+// browsers too.
 //
 // Uses the full `drive` scope because people paste links to folders the extension did
 // not create (e.g. a team folder shared as "Anyone with the link: Editor"); the narrow
@@ -11,27 +17,118 @@ const Drive = (() => {
   const FOLDER_MIME = "application/vnd.google-apps.folder";
   const FOLDER_FIELDS = "id,name,resourceKey,driveId,capabilities/canAddChildren,owners(displayName,me)";
 
+  const SCOPE  = "https://www.googleapis.com/auth/drive";
+
+  // Set this to ship a build where nobody has to paste a Client ID. Client IDs are
+  // public identifiers (they appear in every sign-in URL), so committing one is fine.
+  const BUILT_IN_CLIENT_ID = "";
+
+  const CLIENT_ID_RE = /^[\w-]+\.apps\.googleusercontent\.com$/;
+  const TOKEN_KEY = "nexusDriveToken";      // chrome.storage.session: cleared when the browser closes
+  const EMAIL_KEY = "nexusDriveEmail";      // chrome.storage.local: login hint for silent refresh
+  const CLIENT_KEY = "nexusGoogleClientId"; // chrome.storage.local
+
   class NeedsAuthError extends Error {}
 
-  function isConfigured() {
-    const id = chrome.runtime.getManifest().oauth2?.client_id || "";
-    return !!id && !id.startsWith("YOUR_CLIENT_ID");
+  let clientId = BUILT_IN_CLIENT_ID;
+  let cached = null;       // { token, expiresAt }
+  let loginHint = "";
+
+  // Read the saved Client ID, token and account hint. Await before using anything else.
+  const ready = (async () => {
+    const local = await chrome.storage.local.get([CLIENT_KEY, EMAIL_KEY]);
+    if (local[CLIENT_KEY]) clientId = local[CLIENT_KEY];
+    loginHint = local[EMAIL_KEY] || "";
+    try {
+      const sess = await chrome.storage.session.get(TOKEN_KEY);
+      if (sess[TOKEN_KEY]?.token) cached = sess[TOKEN_KEY];
+    } catch { /* storage.session unavailable */ }
+  })();
+
+  function isConfigured() { return CLIENT_ID_RE.test(clientId); }
+  function getClientId() { return clientId; }
+  function redirectUri() { return chrome.identity.getRedirectURL(); }
+  function isValidClientId(id) { return CLIENT_ID_RE.test((id || "").trim()); }
+
+  async function setClientId(id) {
+    id = (id || "").trim();
+    if (!isValidClientId(id)) throw new Error("That doesn't look like a Client ID. It ends in .apps.googleusercontent.com.");
+    if (id === clientId) return;
+    await forgetToken();            // a token from another client can't be reused
+    clientId = id;
+    await chrome.storage.local.set({ [CLIENT_KEY]: id });
   }
 
-  async function getToken(interactive) {
+  async function saveToken(token, expiresInSec) {
+    cached = { token, expiresAt: Date.now() + (Number(expiresInSec) || 3600) * 1000 };
+    try { await chrome.storage.session.set({ [TOKEN_KEY]: cached }); } catch { /* memory only */ }
+  }
+
+  async function forgetToken() {
+    cached = null;
+    try { await chrome.storage.session.remove(TOKEN_KEY); } catch { /* ignore */ }
+  }
+
+  /**
+   * Run Google's sign-in. interactive=true opens the account/Allow window; false tries
+   * a silent refresh (prompt=none), which succeeds while the person is still signed in
+   * to Google in this browser and has allowed access before.
+   */
+  async function authorize(interactive) {
+    if (!isConfigured()) throw new NeedsAuthError("Google Drive isn't set up.");
+    const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    url.search = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri(),
+      response_type: "token",
+      scope: SCOPE,
+      include_granted_scopes: "true",
+      ...(interactive ? { prompt: "select_account" } : { prompt: "none" }),
+      ...(loginHint ? { login_hint: loginHint } : {}),
+    }).toString();
+
+    let responseUrl;
     try {
-      const res = await chrome.identity.getAuthToken({ interactive });
-      const token = typeof res === "string" ? res : res?.token;
-      if (!token) throw new NeedsAuthError("Not connected to Google Drive.");
-      return token;
+      responseUrl = await chrome.identity.launchWebAuthFlow({
+        url: url.toString(),
+        interactive,
+        ...(interactive ? {} : { timeoutMsForNonInteractive: 8000 }),
+      });
     } catch (e) {
-      if (e instanceof NeedsAuthError) throw e;
-      // Non-interactive calls fail this way whenever the user has not approved yet.
       if (!interactive) throw new NeedsAuthError("Not connected to Google Drive.");
       const msg = String(e?.message || e);
-      if (/did not approve|canceled|cancelled|user denied/i.test(msg)) throw new Error("Google Drive access was not allowed.");
+      if (/did not approve|closed|cancel/i.test(msg)) {
+        throw new Error("The Google window was closed before access was allowed. If it showed an error, check the Client ID and redirect URI.");
+      }
       throw new Error(`Couldn't connect to Google Drive: ${msg}`);
     }
+
+    const params = new URLSearchParams(new URL(responseUrl).hash.slice(1));
+    const error = params.get("error");
+    if (error) {
+      if (!interactive) throw new NeedsAuthError("Not connected to Google Drive.");
+      if (error === "access_denied") throw new Error("Google Drive access was not allowed.");
+      throw new Error(`Google sign-in failed: ${error}.`);
+    }
+    const token = params.get("access_token");
+    if (!token) throw new NeedsAuthError("Not connected to Google Drive.");
+    await saveToken(token, params.get("expires_in"));
+    return token;
+  }
+
+  let silentRenewal = null;   // shared, so parallel uploads don't each open a sign-in
+
+  async function getToken(interactive) {
+    await ready;
+    if (cached && cached.expiresAt - 60_000 > Date.now()) return cached.token;
+    // Access tokens last an hour. Renew silently for someone who connected before;
+    // only show Google's window when asked to.
+    if (loginHint) {
+      silentRenewal ||= authorize(false).finally(() => { silentRenewal = null; });
+      try { return await silentRenewal; } catch (e) { if (!interactive) throw e; }
+    }
+    if (!interactive) throw new NeedsAuthError("Not connected to Google Drive.");
+    return authorize(true);
   }
 
   // Folders shared by link before 2021 need their resource key sent along, or the API
@@ -62,11 +159,11 @@ const Drive = (() => {
       throw new Error("Couldn't reach Google Drive. Check your internet connection.");
     }
     if (res.status === 401 && !refreshedToken) {
-      // Expired or revoked token: drop it from Chrome's cache and try once more.
-      await chrome.identity.removeCachedAuthToken({ token });
+      // Expired or revoked token: forget it, renew silently, and try once more.
+      await forgetToken();
       return request(url, init, attempt, true);
     }
-    if (res.status === 401) throw new NeedsAuthError("Google Drive access expired. Allow access again.");
+    if (res.status === 401) throw new NeedsAuthError("Google Drive access expired. Connect again.");
     if (!res.ok) {
       let detail = "", reason = "";
       try {
@@ -91,8 +188,12 @@ const Drive = (() => {
   }
 
   async function connect() {
-    await getToken(true);
-    return account();
+    await forgetToken();
+    await authorize(true);
+    const user = await account();
+    loginHint = user.emailAddress || "";
+    await chrome.storage.local.set({ [EMAIL_KEY]: loginHint });
+    return user;
   }
 
   async function isConnected() {
@@ -105,14 +206,15 @@ const Drive = (() => {
   }
 
   async function disconnect() {
-    let token = null;
-    try { token = await getToken(false); } catch { /* already disconnected */ }
+    await ready;
+    const token = cached?.token;
+    await forgetToken();
+    loginHint = "";
+    await chrome.storage.local.remove(EMAIL_KEY);
+    // Revoke the grant too, so the next Connect shows Google's Allow screen again.
     if (token) {
-      await chrome.identity.removeCachedAuthToken({ token });
-      // Revoke the grant too, so the next Connect shows the account's Allow screen again.
       try { await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, { method: "POST" }); } catch { /* offline */ }
     }
-    await chrome.identity.clearAllCachedAuthTokens?.();
   }
 
   /**
@@ -205,7 +307,8 @@ const Drive = (() => {
   }
 
   return {
-    NeedsAuthError, isConfigured, connect, isConnected, account, disconnect,
+    NeedsAuthError, ready, isConfigured, isValidClientId, getClientId, setClientId, redirectUri,
+    connect, isConnected, account, disconnect,
     parseFolderRef, getFolder, uploadImage, folderUrl,
   };
 })();

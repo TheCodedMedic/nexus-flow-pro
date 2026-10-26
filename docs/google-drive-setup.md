@@ -54,12 +54,19 @@ Reload the extension in `chrome://extensions` and reopen the side panel.
 
 ## Using it
 
-1. In the panel, **Save to → Google Drive**.
-2. Paste a folder link (from the folder's **Share → Copy link**, or the address bar).
-   The folder must let your account add files: your own folder, or one shared with you
-   (or "Anyone with the link") as **Editor**.
-3. Google asks you to **Allow** the first time. When the box shows a green ✓ and the folder
-   name, start the run. Each image uploads as soon as it is generated.
+Once the Client ID is in, each person using the extension does this once:
+
+1. In the panel, **Save to → Google Drive**, then click **Connect**.
+2. Google opens a window: pick the account and click **Allow**. The row turns green:
+   **Connected to Google Drive** with the account's email. Chrome remembers this.
+3. Paste a folder link (from the folder's **Share → Copy link**, or the address bar).
+   The folder must let that account add files: their own folder, or one shared with them
+   (or "Anyone with the link") as **Editor**. A green ✓ and the folder name mean it's ready.
+
+Each image then uploads as soon as it's generated.
+
+Before the Client ID is added, the panel shows "Google Drive isn't set up" instead of
+the Connect button.
 
 Notes:
 - Uploads go through the Google account signed into **Chrome itself** (the profile), which

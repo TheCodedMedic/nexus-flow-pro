@@ -31,6 +31,10 @@ const promptListEl     = document.getElementById("promptList");
 const listCountEl      = document.getElementById("listCount");
 const downloadFolderEl = document.getElementById("downloadFolder");
 const namingModeEl     = document.getElementById("namingMode");
+const namingBtn        = document.getElementById("namingBtn");
+const namingValueEl    = document.getElementById("namingValue");
+const namingListEl     = document.getElementById("namingList");
+const themeBtn         = document.getElementById("themeBtn");
 const refImageUploadEl = document.getElementById("refImageUpload");
 const refImageClearEl  = document.getElementById("refImageClear");
 const refImageListEl   = document.getElementById("refImageList");
@@ -42,13 +46,13 @@ const folderNameEl     = document.getElementById("folderName");
 const destOpts         = Array.from(document.querySelectorAll(".seg__opt[data-dest]"));
 const destLocalEl      = document.getElementById("destLocal");
 const destDriveEl      = document.getElementById("destDrive");
-const driveNotSetUpEl  = document.getElementById("driveNotSetUp");
-const driveBodyEl      = document.getElementById("driveBody");
 const driveLinkWrap    = document.getElementById("driveLinkWrap");
 const driveLinkInput   = document.getElementById("driveLinkInput");
 const driveLinkMsg     = document.getElementById("driveLinkMsg");
-const driveAcctEl      = document.getElementById("driveAcct");
-const driveEmailEl     = document.getElementById("driveEmail");
+const driveConnEl      = document.getElementById("driveConn");
+const driveConnTitle   = document.getElementById("driveConnTitle");
+const driveConnSub     = document.getElementById("driveConnSub");
+const driveConnectBtn  = document.getElementById("driveConnectBtn");
 const driveDisconnect  = document.getElementById("driveDisconnect");
 
 const { version } = chrome.runtime.getManifest();
@@ -91,11 +95,14 @@ function setBusy(busy) {
   isRunning = busy;
   appEl.classList.toggle("is-running", busy);
   promptsEl.disabled      = busy;
-  namingModeEl.disabled   = busy;
+  namingBtn.disabled      = busy;
+  if (busy) closeNamingList();
   txtUploadEl.disabled    = busy;
   chooseFolderBtn.disabled = busy;
   destOpts.forEach(b => { b.disabled = busy; });
-  [driveLinkInput, driveDisconnect].forEach(el => { el.disabled = busy; });
+  driveDisconnect.disabled = busy;
+  driveConnectBtn.disabled = busy || driveConn === "unset";
+  driveLinkInput.disabled  = busy || driveConn !== "on";
   stopBtn.disabled        = !busy;
   loadRefsBtn.disabled    = busy || refImages.length === 0;
   refreshRunButton();
@@ -158,6 +165,86 @@ async function sendToFlowTab(message) {
 // ─────────────────────────────────────────────
 helpOpen.addEventListener("click", () => helpDialog.showModal());
 helpClose.addEventListener("click", () => helpDialog.close());
+
+// ─────────────────────────────────────────────
+// Theme: system → light → dark (theme.js applies the saved choice before first paint)
+// ─────────────────────────────────────────────
+const THEME_LABEL = { system: "Theme: match system", light: "Theme: light", dark: "Theme: dark" };
+
+function applyTheme(mode) {
+  if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
+  else { delete document.documentElement.dataset.theme; mode = "system"; }
+  themeBtn.dataset.mode = mode;
+  themeBtn.title = THEME_LABEL[mode];
+  themeBtn.setAttribute("aria-label", `${THEME_LABEL[mode]}. Click to change.`);
+  try { localStorage.setItem("nexusTheme", mode); } catch { /* storage blocked */ }
+}
+
+applyTheme(document.documentElement.dataset.theme || "system");
+themeBtn.addEventListener("click", () => {
+  const next = { system: "light", light: "dark", dark: "system" }[themeBtn.dataset.mode] || "system";
+  applyTheme(next);
+});
+
+// ─────────────────────────────────────────────
+// File names dropdown (custom listbox; the hidden #namingMode input holds the value)
+// ─────────────────────────────────────────────
+const namingOptions = Array.from(namingListEl.querySelectorAll(".dd__opt"));
+let namingActive = 0;
+
+function setNamingMode(value, { notify = false } = {}) {
+  const opt = namingOptions.find(o => o.dataset.value === value) || namingOptions[0];
+  namingModeEl.value = opt.dataset.value;
+  namingOptions.forEach(o => o.setAttribute("aria-selected", String(o === opt)));
+  namingValueEl.innerHTML = opt.innerHTML;
+  if (notify) namingModeEl.dispatchEvent(new Event("change"));
+}
+
+function setNamingActive(i) {
+  namingActive = (i + namingOptions.length) % namingOptions.length;
+  namingOptions.forEach((o, k) => o.classList.toggle("is-active", k === namingActive));
+  namingListEl.setAttribute("aria-activedescendant", namingOptions[namingActive].id);
+}
+
+function openNamingList() {
+  if (namingBtn.disabled) return;
+  namingListEl.hidden = false;
+  namingBtn.setAttribute("aria-expanded", "true");
+  setNamingActive(Math.max(0, namingOptions.findIndex(o => o.dataset.value === namingModeEl.value)));
+  namingListEl.focus();
+}
+
+function closeNamingList({ refocus = false } = {}) {
+  if (namingListEl.hidden) return;
+  namingListEl.hidden = true;
+  namingBtn.setAttribute("aria-expanded", "false");
+  if (refocus) namingBtn.focus();
+}
+
+namingBtn.addEventListener("click", () => (namingListEl.hidden ? openNamingList() : closeNamingList()));
+namingBtn.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); openNamingList(); }
+});
+namingOptions.forEach((o, i) => {
+  o.addEventListener("mousemove", () => setNamingActive(i));
+  o.addEventListener("click", () => { setNamingMode(o.dataset.value, { notify: true }); closeNamingList({ refocus: true }); });
+});
+namingListEl.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown") { e.preventDefault(); setNamingActive(namingActive + 1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); setNamingActive(namingActive - 1); }
+  else if (e.key === "Home") { e.preventDefault(); setNamingActive(0); }
+  else if (e.key === "End") { e.preventDefault(); setNamingActive(namingOptions.length - 1); }
+  else if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    setNamingMode(namingOptions[namingActive].dataset.value, { notify: true });
+    closeNamingList({ refocus: true });
+  } else if (e.key === "Escape") { e.preventDefault(); closeNamingList({ refocus: true }); }
+  else if (e.key === "Tab") closeNamingList();
+});
+document.addEventListener("mousedown", (e) => {
+  if (!namingListEl.hidden && !e.target.closest("#namingDd")) closeNamingList();
+});
+setNamingMode(namingModeEl.value);
 
 // ─────────────────────────────────────────────
 // Prompts + queue
@@ -482,8 +569,68 @@ function setDest(dest, { persist = true } = {}) {
 
 destOpts.forEach(b => b.addEventListener("click", () => setDest(b.dataset.dest)));
 
+// ── Step 1: connection (one Allow per person; Chrome remembers it) ──
+let driveConn = "off";   // "unset" (no Client ID in this build) | "off" | "connecting" | "on"
+
+function setDriveConn(state, sub) {
+  driveConn = state;
+  driveConnEl.className = `dconn is-${state}`;
+  driveConnTitle.textContent = {
+    unset: "Google Drive isn't set up",
+    off: "Google Drive",
+    connecting: "Google Drive",
+    on: "Connected to Google Drive",
+  }[state];
+  driveConnSub.textContent = sub || {
+    unset: "The extension owner adds a Google Client ID once (docs/google-drive-setup.md). Then Connect appears here.",
+    off: "Not connected",
+    connecting: "Waiting for you to allow access in the Google window…",
+    on: "Connected",
+  }[state];
+  driveConnectBtn.hidden = state === "on" || state === "unset";
+  driveConnectBtn.disabled = state === "connecting" || isRunning;
+  driveConnectBtn.textContent = state === "connecting" ? "Connecting…" : "Connect";
+  driveDisconnect.hidden = state !== "on";
+  driveLinkInput.disabled = state !== "on" || isRunning;
+}
+
+async function refreshDriveConn() {
+  if (!Drive.isConfigured()) { setDriveConn("unset"); return false; }
+  if (!(await Drive.isConnected())) { setDriveConn("off"); return false; }
+  setDriveConn("on");
+  try {
+    const user = await Drive.account();
+    if (user.emailAddress) setDriveConn("on", user.emailAddress);
+  } catch (e) {
+    if (e instanceof Drive.NeedsAuthError) { setDriveConn("off"); return false; }
+  }
+  return true;
+}
+
+driveConnectBtn.addEventListener("click", async () => {
+  setDriveConn("connecting");
+  try {
+    await Drive.connect();
+  } catch (e) {
+    setDriveConn("off", e.message);
+    return;
+  }
+  if (await refreshDriveConn()) {
+    if (driveLinkInput.value.trim()) checkDriveLink();
+    else { setLinkState("", DRIVE_EMPTY_HINT); driveLinkInput.focus(); }
+  }
+});
+
+driveDisconnect.addEventListener("click", async () => {
+  await Drive.disconnect();
+  driveFolder = null;
+  setDriveConn("off", "Disconnected");
+  setLinkState("", "");
+});
+
+// ── Step 2: the folder link ──
 // state: "" | "checking" | "ok" | "bad"
-function setLinkState(state, message, { allowButton = false } = {}) {
+function setLinkState(state, message) {
   driveLinkWrap.className = "dlink" + (state ? ` is-${state}` : "");
   driveLinkMsg.className = "dlink__msg" + (state === "ok" || state === "bad" ? ` is-${state}` : "");
   driveLinkMsg.textContent = "";
@@ -502,56 +649,31 @@ function setLinkState(state, message, { allowButton = false } = {}) {
     return;
   }
   driveLinkMsg.textContent = message || "";
-  if (allowButton) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "link-btn";
-    btn.textContent = "Allow access";
-    btn.addEventListener("click", () => checkDriveLink({ interactive: true }));
-    driveLinkMsg.append(btn);
-  }
 }
 
-async function showAccount() {
-  try {
-    const user = await Drive.account();
-    driveEmailEl.textContent = user.emailAddress ? `Uploading as ${user.emailAddress}` : "Connected to Google Drive";
-    driveAcctEl.hidden = false;
-  } catch {
-    driveAcctEl.hidden = true;
-  }
+const DRIVE_EMPTY_HINT = "Paste the link of a folder you can edit.";
+
+async function initDrive() {
+  const connected = await refreshDriveConn();
+  if (!connected) { setLinkState("", ""); return; }
+  if (driveLinkInput.value.trim()) checkDriveLink();
+  else setLinkState("", DRIVE_EMPTY_HINT);
 }
 
-function initDrive() {
-  const configured = Drive.isConfigured();
-  driveNotSetUpEl.hidden = configured;
-  driveBodyEl.hidden = !configured;
-  if (!configured) return;
-  if (driveLinkInput.value.trim()) checkDriveLink({ interactive: false });
-  else setLinkState("", "Paste the link of a folder you can edit. Google asks you to allow access the first time.");
-}
-
-/**
- * Verify the pasted link: it must be a Drive folder this account can add files to.
- * interactive=true (the user just pasted/typed) may open Google's one-time Allow popup;
- * interactive=false (restoring on panel open) never does, and offers a button instead.
- */
-async function checkDriveLink({ interactive }) {
+// Verify the pasted link: it must be a Drive folder this account can add files to.
+async function checkDriveLink() {
   const seq = ++checkSeq;
   const text = driveLinkInput.value.trim();
   driveFolder = null;
   chrome.storage.local.set({ nexusDriveLink: text, nexusDriveFolder: null });
 
-  if (!text) { setLinkState("", "Paste the link of a folder you can edit. Google asks you to allow access the first time."); return; }
+  if (driveConn !== "on") { setLinkState("", ""); return; }
+  if (!text) { setLinkState("", DRIVE_EMPTY_HINT); return; }
   const ref = Drive.parseFolderRef(text);
   if (!ref) { setLinkState("bad", "That isn't a Google Drive folder link. Copy it from the folder's Share menu or address bar."); return; }
 
   setLinkState("checking", "Checking access…");
   try {
-    if (!(await Drive.isConnected())) {
-      if (!interactive) { setLinkState("bad", "Google Drive needs your permission to upload.", { allowButton: true }); return; }
-      await Drive.connect();
-    }
     const folder = await Drive.getFolder(ref);
     if (seq !== checkSeq) return;
     if (!folder.canAdd) {
@@ -562,12 +684,11 @@ async function checkDriveLink({ interactive }) {
     chrome.storage.local.set({ nexusDriveFolder: folder });
     setLinkState("ok");
     driveLinkInput.scrollLeft = 0;   // show the start of the link, not the tail
-    showAccount();
   } catch (e) {
     if (seq !== checkSeq) return;
     if (e instanceof Drive.NeedsAuthError) {
-      driveAcctEl.hidden = true;
-      setLinkState("bad", "Google Drive needs your permission to upload.", { allowButton: true });
+      setDriveConn("off", "Access expired. Connect again.");
+      setLinkState("", "");
     } else {
       setLinkState("bad", e.message);
     }
@@ -576,30 +697,23 @@ async function checkDriveLink({ interactive }) {
 
 driveLinkInput.addEventListener("input", () => {
   clearTimeout(checkTimer);
-  checkTimer = setTimeout(() => checkDriveLink({ interactive: true }), 500);
+  checkTimer = setTimeout(checkDriveLink, 500);
 });
 driveLinkInput.addEventListener("paste", () => {
   clearTimeout(checkTimer);
   // let the pasted text land in the input first
-  checkTimer = setTimeout(() => checkDriveLink({ interactive: true }), 0);
+  checkTimer = setTimeout(checkDriveLink, 0);
 });
 driveLinkInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { clearTimeout(checkTimer); checkDriveLink({ interactive: true }); }
-});
-
-driveDisconnect.addEventListener("click", async () => {
-  await Drive.disconnect();
-  driveFolder = null;
-  driveAcctEl.hidden = true;
-  setLinkState("bad", "Disconnected. Uploading needs your permission again.", { allowButton: true });
+  if (e.key === "Enter") { clearTimeout(checkTimer); checkDriveLink(); }
 });
 
 // Blocks a run that would generate images with nowhere to put them.
 async function destinationProblem() {
   if (saveDest !== "drive") return null;
   if (!Drive.isConfigured()) return "Google Drive isn't set up in this copy of the extension. Switch Save to Computer.";
+  if (!(await Drive.isConnected())) return "Connect Google Drive under Save to, or switch to Computer.";
   if (!driveFolder) return "Paste a Google Drive folder link under Save to and wait for the checkmark.";
-  if (!(await Drive.isConnected())) return "Google Drive needs your permission. Click Allow access under Save to.";
   return null;
 }
 
@@ -778,8 +892,8 @@ async function startQueue(startIndex = 0) {
           if (saved.needsAuth) {
             // Every later upload would fail the same way; stop so Continue can resume after reconnecting.
             isRunning = false;
-            setStatus("Google Drive access was lost. Click Allow access under Save to, then Continue.");
-            checkDriveLink({ interactive: false });
+            setStatus("Google Drive access was lost. Click Connect under Save to, then Continue.");
+            setDriveConn("off", "Access expired. Connect again.");
           }
         }
       } else if (c?.stopped || !isRunning) {
@@ -883,7 +997,7 @@ async function retryPrompt(index) {
       } else {
         updateStatus(index, "failed");
         setStatus(`Prompt ${index + 1} regenerated but wasn't saved: ${saved.error}`);
-        if (saved.needsAuth) checkDriveLink({ interactive: false });
+        if (saved.needsAuth) setDriveConn("off", "Access expired. Connect again.");
       }
     } else if (c?.stopped || !isRunning) {
       updateStatus(index, prevStatus);
@@ -903,7 +1017,7 @@ async function retryPrompt(index) {
 // Persist / restore (settings and references only; prompts start fresh)
 // ─────────────────────────────────────────────
 chrome.storage.local.get(["nexusNaming", "nexusSaveDest", "nexusDriveLink", "nexusRefImages", "nexusRefImage", "nexusRefImageName"], (r) => {
-  if (r.nexusNaming) namingModeEl.value = r.nexusNaming;
+  if (r.nexusNaming) setNamingMode(r.nexusNaming);
   if (r.nexusDriveLink) driveLinkInput.value = r.nexusDriveLink;
   setDest(r.nexusSaveDest || "local", { persist: false });
   if (Array.isArray(r.nexusRefImages) && r.nexusRefImages.length) {

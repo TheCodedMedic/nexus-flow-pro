@@ -31,7 +31,7 @@
           <li>Open a Google Flow project tab.</li>
           <li>Optional: add character references, click <b>Upload to project</b>, then <b>Hard refresh</b>. Every prompt will attach them.</li>
           <li>Paste your prompts, one per line. Start a line with <code>[00.15]</code> to name the file by timestamp.</li>
-          <li>Click <b>Start</b>. Up to 5 prompts generate at once, 3 seconds apart, and each image is saved when it finishes.</li>
+          <li>Click <b>Start</b>. Up to 5 prompts generate at once, 3 seconds apart, and each image is saved when it finishes, to your computer or a Google Drive folder.</li>
         </ol>
         <button type="button" class="btn btn--primary" id="helpClose">Got it</button>
       </dialog>
@@ -92,13 +92,39 @@
             </select>
           </div>
         </div>
-        <div class="row">
-          <span class="label">Save to</span>
-          <button type="button" class="folder" id="chooseFolderBtn" title="Choose a folder">
-            <span class="folder__name" id="folderName">Downloads/nexus-flow</span>
-            <span class="folder__action">Change</span>
-          </button>
-          <input type="text" id="downloadFolder" value="nexus-flow" hidden />
+        <div class="row row--stack">
+          <div class="row__line">
+            <span class="label" id="destLabel">Save to</span>
+            <div class="seg" role="radiogroup" aria-labelledby="destLabel">
+              <button type="button" class="seg__opt" role="radio" aria-checked="true" data-dest="local">Computer</button>
+              <button type="button" class="seg__opt" role="radio" aria-checked="false" data-dest="drive">Google Drive</button>
+            </div>
+          </div>
+
+          <div id="destLocal">
+            <button type="button" class="folder" id="chooseFolderBtn" title="Choose a folder">
+              <span class="folder__name" id="folderName">Downloads/nexus-flow</span>
+              <span class="folder__action">Change</span>
+            </button>
+            <input type="text" id="downloadFolder" value="nexus-flow" hidden />
+          </div>
+
+          <div id="destDrive" class="drive" hidden>
+            <p class="hint" id="driveNotSetUp" hidden>Google Drive isn't set up in this copy of the extension yet. See <code>docs/google-drive-setup.md</code>.</p>
+
+            <div class="drive__body" id="driveBody">
+              <div class="dlink" id="driveLinkWrap">
+                <input type="url" id="driveLinkInput" class="dlink__input" placeholder="Paste a Google Drive folder link"
+                       autocomplete="off" spellcheck="false" aria-describedby="driveLinkMsg" />
+                <span class="dlink__state" id="driveLinkState" aria-hidden="true"></span>
+              </div>
+              <p class="dlink__msg" id="driveLinkMsg" role="status" aria-live="polite"></p>
+              <div class="acct" id="driveAcct" hidden>
+                <span class="acct__email" id="driveEmail"></span>
+                <button type="button" class="link-btn" id="driveDisconnect">Disconnect</button>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -112,6 +138,7 @@
         </div>
       </footer>
     </div>
+    <script src="drive.js" defer></script>
     <script src="sidepanel.js" defer></script>
   </body>
 </html>

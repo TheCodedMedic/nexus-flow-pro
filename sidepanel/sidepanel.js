@@ -39,6 +39,17 @@ const loadRefsBtn      = document.getElementById("loadRefsBtn");
 const hardRefreshBtn   = document.getElementById("hardRefreshBtn");
 const chooseFolderBtn  = document.getElementById("chooseFolderBtn");
 const folderNameEl     = document.getElementById("folderName");
+const destOpts         = Array.from(document.querySelectorAll(".seg__opt[data-dest]"));
+const destLocalEl      = document.getElementById("destLocal");
+const destDriveEl      = document.getElementById("destDrive");
+const driveNotSetUpEl  = document.getElementById("driveNotSetUp");
+const driveBodyEl      = document.getElementById("driveBody");
+const driveLinkWrap    = document.getElementById("driveLinkWrap");
+const driveLinkInput   = document.getElementById("driveLinkInput");
+const driveLinkMsg     = document.getElementById("driveLinkMsg");
+const driveAcctEl      = document.getElementById("driveAcct");
+const driveEmailEl     = document.getElementById("driveEmail");
+const driveDisconnect  = document.getElementById("driveDisconnect");
 
 const { version } = chrome.runtime.getManifest();
 versionTagEl.textContent = `v${version}`;
@@ -83,6 +94,8 @@ function setBusy(busy) {
   namingModeEl.disabled   = busy;
   txtUploadEl.disabled    = busy;
   chooseFolderBtn.disabled = busy;
+  destOpts.forEach(b => { b.disabled = busy; });
+  [driveLinkInput, driveDisconnect].forEach(el => { el.disabled = busy; });
   stopBtn.disabled        = !busy;
   loadRefsBtn.disabled    = busy || refImages.length === 0;
   refreshRunButton();
@@ -412,6 +425,8 @@ function fileNameFor(serialNum, rawPromptText) {
   return `${name}.jpg`;
 }
 
+// Saves one finished image to the chosen destination.
+// Resolves { ok: true } or { ok: false, error, needsAuth }.
 async function saveImage(url, serialNum, rawPromptText) {
   if (!url.startsWith("http") && !url.startsWith("blob:")) {
     let origin = FLOW_BASE;
@@ -424,9 +439,14 @@ async function saveImage(url, serialNum, rawPromptText) {
   const filename = fileNameFor(serialNum, rawPromptText);
 
   try {
-    if (dirHandle) {
+    if (saveDest === "drive") {
+      // Flow's image URLs only load with the page's cookies, so the content script fetches it.
       const res = await sendToFlowTab({ type: "NEXUS_FETCH_IMAGE", url });
-      if (!res?.base64) { console.warn("[Nexus Flow] Image fetch failed:", res?.error); return; }
+      if (!res?.base64) return { ok: false, error: res?.error || "Couldn't read the image from Flow." };
+      await Drive.uploadImage(driveFolder, filename, base64ToBlob(res.base64));
+    } else if (dirHandle) {
+      const res = await sendToFlowTab({ type: "NEXUS_FETCH_IMAGE", url });
+      if (!res?.base64) return { ok: false, error: res?.error || "Couldn't read the image from Flow." };
       const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
       const writable   = await fileHandle.createWritable();
       await writable.write(base64ToBlob(res.base64));
@@ -436,9 +456,151 @@ async function saveImage(url, serialNum, rawPromptText) {
       // overwrite so a Retry replaces the existing file instead of making "name (1).jpg"
       await chrome.downloads.download({ url, filename: `${folder}/${filename}`, saveAs: false, conflictAction: "overwrite" });
     }
+    return { ok: true };
   } catch (e) {
-    console.warn("[Nexus Flow] Download failed:", e);
+    console.warn("[Nexus Flow] Save failed:", e);
+    return { ok: false, error: String(e?.message || e), needsAuth: e instanceof Drive.NeedsAuthError };
   }
+}
+
+// ─────────────────────────────────────────────
+// Google Drive destination: paste a folder link, we verify it and show a checkmark
+// ─────────────────────────────────────────────
+let saveDest    = "local";   // "local" | "drive"
+let driveFolder = null;      // verified folder { id, name, resourceKey, owner, canAdd }; null until checked
+let checkSeq    = 0;
+let checkTimer  = null;
+
+function setDest(dest, { persist = true } = {}) {
+  saveDest = dest === "drive" ? "drive" : "local";
+  destOpts.forEach(b => b.setAttribute("aria-checked", String(b.dataset.dest === saveDest)));
+  destLocalEl.hidden = saveDest !== "local";
+  destDriveEl.hidden = saveDest !== "drive";
+  if (persist) chrome.storage.local.set({ nexusSaveDest: saveDest });
+  if (saveDest === "drive") initDrive();
+}
+
+destOpts.forEach(b => b.addEventListener("click", () => setDest(b.dataset.dest)));
+
+// state: "" | "checking" | "ok" | "bad"
+function setLinkState(state, message, { allowButton = false } = {}) {
+  driveLinkWrap.className = "dlink" + (state ? ` is-${state}` : "");
+  driveLinkMsg.className = "dlink__msg" + (state === "ok" || state === "bad" ? ` is-${state}` : "");
+  driveLinkMsg.textContent = "";
+  if (state === "ok" && driveFolder) {
+    driveLinkMsg.append("Can upload to ");
+    const name = document.createElement("b");
+    name.textContent = driveFolder.name;
+    driveLinkMsg.append(name);
+    if (driveFolder.owner && driveFolder.owner !== "You") driveLinkMsg.append(` · ${driveFolder.owner}`);
+    const open = document.createElement("a");
+    open.href = Drive.folderUrl(driveFolder);
+    open.target = "_blank";
+    open.rel = "noopener";
+    open.textContent = "Open";
+    driveLinkMsg.append(open);
+    return;
+  }
+  driveLinkMsg.textContent = message || "";
+  if (allowButton) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "link-btn";
+    btn.textContent = "Allow access";
+    btn.addEventListener("click", () => checkDriveLink({ interactive: true }));
+    driveLinkMsg.append(btn);
+  }
+}
+
+async function showAccount() {
+  try {
+    const user = await Drive.account();
+    driveEmailEl.textContent = user.emailAddress ? `Uploading as ${user.emailAddress}` : "Connected to Google Drive";
+    driveAcctEl.hidden = false;
+  } catch {
+    driveAcctEl.hidden = true;
+  }
+}
+
+function initDrive() {
+  const configured = Drive.isConfigured();
+  driveNotSetUpEl.hidden = configured;
+  driveBodyEl.hidden = !configured;
+  if (!configured) return;
+  if (driveLinkInput.value.trim()) checkDriveLink({ interactive: false });
+  else setLinkState("", "Paste the link of a folder you can edit. Google asks you to allow access the first time.");
+}
+
+/**
+ * Verify the pasted link: it must be a Drive folder this account can add files to.
+ * interactive=true (the user just pasted/typed) may open Google's one-time Allow popup;
+ * interactive=false (restoring on panel open) never does, and offers a button instead.
+ */
+async function checkDriveLink({ interactive }) {
+  const seq = ++checkSeq;
+  const text = driveLinkInput.value.trim();
+  driveFolder = null;
+  chrome.storage.local.set({ nexusDriveLink: text, nexusDriveFolder: null });
+
+  if (!text) { setLinkState("", "Paste the link of a folder you can edit. Google asks you to allow access the first time."); return; }
+  const ref = Drive.parseFolderRef(text);
+  if (!ref) { setLinkState("bad", "That isn't a Google Drive folder link. Copy it from the folder's Share menu or address bar."); return; }
+
+  setLinkState("checking", "Checking access…");
+  try {
+    if (!(await Drive.isConnected())) {
+      if (!interactive) { setLinkState("bad", "Google Drive needs your permission to upload.", { allowButton: true }); return; }
+      await Drive.connect();
+    }
+    const folder = await Drive.getFolder(ref);
+    if (seq !== checkSeq) return;
+    if (!folder.canAdd) {
+      setLinkState("bad", `You can view “${folder.name}” but can't add files. Ask the owner for Editor access.`);
+      return;
+    }
+    driveFolder = folder;
+    chrome.storage.local.set({ nexusDriveFolder: folder });
+    setLinkState("ok");
+    driveLinkInput.scrollLeft = 0;   // show the start of the link, not the tail
+    showAccount();
+  } catch (e) {
+    if (seq !== checkSeq) return;
+    if (e instanceof Drive.NeedsAuthError) {
+      driveAcctEl.hidden = true;
+      setLinkState("bad", "Google Drive needs your permission to upload.", { allowButton: true });
+    } else {
+      setLinkState("bad", e.message);
+    }
+  }
+}
+
+driveLinkInput.addEventListener("input", () => {
+  clearTimeout(checkTimer);
+  checkTimer = setTimeout(() => checkDriveLink({ interactive: true }), 500);
+});
+driveLinkInput.addEventListener("paste", () => {
+  clearTimeout(checkTimer);
+  // let the pasted text land in the input first
+  checkTimer = setTimeout(() => checkDriveLink({ interactive: true }), 0);
+});
+driveLinkInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { clearTimeout(checkTimer); checkDriveLink({ interactive: true }); }
+});
+
+driveDisconnect.addEventListener("click", async () => {
+  await Drive.disconnect();
+  driveFolder = null;
+  driveAcctEl.hidden = true;
+  setLinkState("bad", "Disconnected. Uploading needs your permission again.", { allowButton: true });
+});
+
+// Blocks a run that would generate images with nowhere to put them.
+async function destinationProblem() {
+  if (saveDest !== "drive") return null;
+  if (!Drive.isConfigured()) return "Google Drive isn't set up in this copy of the extension. Switch Save to Computer.";
+  if (!driveFolder) return "Paste a Google Drive folder link under Save to and wait for the checkmark.";
+  if (!(await Drive.isConnected())) return "Google Drive needs your permission. Click Allow access under Save to.";
+  return null;
 }
 
 // ─────────────────────────────────────────────
@@ -519,6 +681,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 async function startQueue(startIndex = 0) {
   const lines = parsePrompts();
   if (!lines.length) { setStatus("Add at least one prompt."); return; }
+  const destError = await destinationProblem();
+  if (destError) { setStatus(destError); return; }
 
   const activeTab = await getActiveTab();
   if (!activeTab?.id) { setStatus("No active tab."); return; }
@@ -602,16 +766,28 @@ async function startQueue(startIndex = 0) {
       inFlight = inFlight.filter(j => j !== idx);
 
       if (c?.done && c.url) {
-        setStatus(`Saving prompt ${idx + 1}…`);
-        await saveImage(c.url, idx, lines[idx]);
-        updateStatus(idx, "done");
-        completed++;
-        setStatus(`${completed} of ${totalToProcess} done · ${inFlight.length} generating`);
+        setStatus(saveDest === "drive" ? `Uploading prompt ${idx + 1} to Drive…` : `Saving prompt ${idx + 1}…`);
+        const saved = await saveImage(c.url, idx, lines[idx]);
+        if (saved.ok) {
+          updateStatus(idx, "done");
+          completed++;
+          setStatus(`${completed} of ${totalToProcess} done · ${inFlight.length} generating`);
+        } else {
+          updateStatus(idx, "failed");
+          setStatus(`Prompt ${idx + 1} generated but wasn't saved: ${saved.error}`);
+          if (saved.needsAuth) {
+            // Every later upload would fail the same way; stop so Continue can resume after reconnecting.
+            isRunning = false;
+            setStatus("Google Drive access was lost. Click Allow access under Save to, then Continue.");
+            checkDriveLink({ interactive: false });
+          }
+        }
       } else if (c?.stopped || !isRunning) {
         break;
       } else {
+        // Not added to submitFailed: collectedCount below already accounts for this job,
+        // and counting it twice ended the loop with prompts still generating.
         updateStatus(idx, "failed");
-        submitFailed.add(idx);
         setStatus(`Prompt ${idx + 1} failed.`);
       }
       collectedCount++;
@@ -672,6 +848,8 @@ promptListEl.addEventListener("click", (e) => {
 async function retryPrompt(index) {
   const item = promptStatuses[index];
   if (!item || isRunning) return;
+  const destError = await destinationProblem();
+  if (destError) { setStatus(destError); return; }
   const tab = await requireProjectTab();
   if (!tab) return;
   flowTabId = tab.id;
@@ -698,9 +876,15 @@ async function retryPrompt(index) {
     const c = await sendToFlowTab({ type: "FLOW_COLLECT_NEXT", timeoutMs: COLLECT_TIMEOUT_MS });
 
     if (c?.done && c.url) {
-      await saveImage(c.url, index, item.text);   // same index → same filename → overwrite
-      updateStatus(index, "done");
-      setStatus(`Prompt ${index + 1} regenerated and replaced.`);
+      const saved = await saveImage(c.url, index, item.text);   // same index → same filename → overwrite
+      if (saved.ok) {
+        updateStatus(index, "done");
+        setStatus(`Prompt ${index + 1} regenerated and replaced.`);
+      } else {
+        updateStatus(index, "failed");
+        setStatus(`Prompt ${index + 1} regenerated but wasn't saved: ${saved.error}`);
+        if (saved.needsAuth) checkDriveLink({ interactive: false });
+      }
     } else if (c?.stopped || !isRunning) {
       updateStatus(index, prevStatus);
       setStatus("Retry stopped. The old image was kept.");
@@ -718,8 +902,10 @@ async function retryPrompt(index) {
 // ─────────────────────────────────────────────
 // Persist / restore (settings and references only; prompts start fresh)
 // ─────────────────────────────────────────────
-chrome.storage.local.get(["nexusNaming", "nexusRefImages", "nexusRefImage", "nexusRefImageName"], (r) => {
+chrome.storage.local.get(["nexusNaming", "nexusSaveDest", "nexusDriveLink", "nexusRefImages", "nexusRefImage", "nexusRefImageName"], (r) => {
   if (r.nexusNaming) namingModeEl.value = r.nexusNaming;
+  if (r.nexusDriveLink) driveLinkInput.value = r.nexusDriveLink;
+  setDest(r.nexusSaveDest || "local", { persist: false });
   if (Array.isArray(r.nexusRefImages) && r.nexusRefImages.length) {
     refImages = r.nexusRefImages.filter(x => x && x.base64);
   } else if (r.nexusRefImage) {

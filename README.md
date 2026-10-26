@@ -7,7 +7,7 @@ result, attaches a consistent character reference to every prompt, and auto-down
 It is a heavily modified fork of an extension originally called **ZAPI FLOW**, rebranded and
 extended into **Nexus Flow Pro**.
 
-- **Version:** 3.0.0
+- **Version:** 3.1.0
 - **Target site:** `https://labs.google/fx/*` (Google Flow projects)
 - **Type:** Unpacked Chrome extension (Manifest V3, side panel)
 - **No build step.** Plain JS/HTML/CSS. Edit files directly and reload the extension.
@@ -24,8 +24,10 @@ extended into **Nexus Flow Pro**.
    reloads the tab so they become selectable. References persist across restarts.
 3. **Auto-save** — each finished image is saved as it completes. File names: `Serial`
    (`000-name.jpg`), `Timestamp` (`00-15-name.jpg`, from a `[mm.ss]` tag at the start of the
-   line), or prompt text only. Save to a chosen folder (File System Access API) or
-   `Downloads/nexus-flow`.
+   line), or prompt text only. Save to **Computer** (a chosen folder via the File System
+   Access API, or `Downloads/nexus-flow`) or **Google Drive** (paste a folder link; it is
+   checked for write access and marked with a ✓). Drive needs a one-time Google Cloud setup:
+   see [`docs/google-drive-setup.md`](docs/google-drive-setup.md).
 4. **Status row** — shows whether the content script on the Flow project tab is actually
    responding, and whether Flow's Agent mode is on (which blocks starting a run).
 
@@ -44,6 +46,7 @@ nexus-flow-extension/
 │   ├── sidepanel.html         # Side panel UI
 │   ├── sidepanel.css          # Warm-neutral theme, light + dark
 │   ├── fonts/                 # Onest + Geist Mono (latin, OFL), bundled
+│   ├── drive.js               # Google Drive: sign-in, folder-link check, upload with backoff
 │   └── sidepanel.js           # UI logic, queue driver, downloads, settings persistence
 └── icons/                     # logo.svg + 16 / 32 / 48 / 128 px PNGs rendered from it
 ```
@@ -160,8 +163,10 @@ if a step is missed.
 - Syntax-check before reloading: `node --check content.js && node --check sidepanel/sidepanel.js`.
 - All content-script logs use the `[NEXUSFLOW]` prefix — filter the Flow tab console by it to trace
   a run (which "+" was clicked, whether the picker opened, whether the reference was found, etc.).
-- `manifest.json` permissions: `storage`, `sidePanel`, `unlimitedStorage`, `scripting`, `downloads`;
-  host: `https://labs.google/fx/*`.
+- `manifest.json` permissions: `storage`, `sidePanel`, `unlimitedStorage`, `scripting`,
+  `downloads`, `debugger`, `identity`; hosts: Flow (`flow.google.com`, `labs.google/fx`) and
+  `www.googleapis.com` (Drive). The `key` pins the extension ID to
+  `mmdhiajpiolojckcddjdebfnekpjhhdf` so the Drive OAuth client works for every unpacked install.
 
 ---
 

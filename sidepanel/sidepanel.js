@@ -54,16 +54,12 @@ const driveConnTitle   = document.getElementById("driveConnTitle");
 const driveConnSub     = document.getElementById("driveConnSub");
 const driveConnectBtn  = document.getElementById("driveConnectBtn");
 const driveDisconnect  = document.getElementById("driveDisconnect");
+const driveChangeBtn   = document.getElementById("driveChange");
 const driveSetupEl     = document.getElementById("driveSetup");
-const driveClientInput = document.getElementById("driveClientIdInput");
-const driveClientSave  = document.getElementById("driveClientIdSave");
-const driveClientCancel = document.getElementById("driveClientIdCancel");
+const driveUrlInput    = document.getElementById("driveUrlInput");
+const driveKeyInput    = document.getElementById("driveKeyInput");
+const driveSetupCancel = document.getElementById("driveSetupCancel");
 const driveSetupError  = document.getElementById("driveSetupError");
-const driveRedirectUri = document.getElementById("driveRedirectUri");
-const driveRedirectCopy = document.getElementById("driveRedirectCopy");
-const driveClientLine  = document.getElementById("driveClientLine");
-const driveClientShort = document.getElementById("driveClientIdShort");
-const driveClientChange = document.getElementById("driveClientIdChange");
 
 const { version } = chrome.runtime.getManifest();
 versionTagEl.textContent = `v${version}`;
@@ -111,9 +107,8 @@ function setBusy(busy) {
   chooseFolderBtn.disabled = busy;
   destOpts.forEach(b => { b.disabled = busy; });
   driveDisconnect.disabled = busy;
-  driveConnectBtn.disabled = busy || driveConn === "unset";
-  driveClientChange.disabled = busy;
-  driveClientSave.disabled = busy;
+  driveConnectBtn.disabled = busy;
+  driveChangeBtn.disabled = busy;
   driveLinkInput.disabled  = busy || driveConn !== "on";
   stopBtn.disabled        = !busy;
   loadRefsBtn.disabled    = busy || refImages.length === 0;
@@ -581,114 +576,77 @@ function setDest(dest, { persist = true } = {}) {
 
 destOpts.forEach(b => b.addEventListener("click", () => setDest(b.dataset.dest)));
 
-// ── Step 0: Google Client ID (once per install; tells Google which app is asking) ──
-driveRedirectUri.textContent = Drive.redirectUri();
+// ── Step 1: connect to the Drive uploader (an Apps Script web app; docs/drive-uploader.gs) ──
+let driveConn = "off";   // "off" | "connecting" | "on"
+
+function setDriveConn(state, sub) {
+  driveConn = state;
+  driveConnEl.className = `dconn is-${state}`;
+  driveConnTitle.textContent = state === "on" ? "Connected to Google Drive" : "Google Drive";
+  driveConnSub.textContent = sub || { off: "Not connected", connecting: "Connecting…", on: "Connected" }[state];
+  driveChangeBtn.hidden = driveDisconnect.hidden = state !== "on";
+  driveConnectBtn.disabled = state === "connecting" || isRunning;
+  driveConnectBtn.textContent = state === "connecting" ? "Connecting…" : "Connect";
+  driveLinkInput.disabled = state !== "on" || isRunning;
+  // The folder box only matters once uploads can go somewhere.
+  driveLinkWrap.hidden = driveLinkMsg.hidden = state !== "on";
+}
 
 function showDriveSetup(open, { canCancel = false } = {}) {
   driveSetupEl.hidden = !open;
-  driveClientCancel.hidden = !canCancel;
+  driveSetupCancel.hidden = !canCancel;
   driveSetupError.hidden = true;
   if (open) {
-    driveClientInput.value = Drive.getClientId();
-    driveClientInput.focus();
+    const u = Drive.getUploader();
+    driveUrlInput.value = u.url || "";
+    driveKeyInput.value = u.key || "";
   }
-  const configured = Drive.isConfigured();
-  driveClientLine.hidden = open || !configured;
-  driveClientShort.textContent = configured ? Drive.getClientId() : "";
-  driveClientShort.title = Drive.getClientId();
 }
 
-driveClientSave.addEventListener("click", async () => {
+async function refreshDriveConn() {
+  await Drive.ready;
+  if (Drive.isConnected()) {
+    setDriveConn("on", `Uploads go to ${Drive.getUploader().email}'s Drive`);
+    showDriveSetup(false);
+    return true;
+  }
+  setDriveConn("off");
+  showDriveSetup(true);
+  return false;
+}
+
+driveConnectBtn.addEventListener("click", async () => {
+  driveSetupError.hidden = true;
+  setDriveConn("connecting");
   try {
-    await Drive.setClientId(driveClientInput.value);
+    await Drive.connect(driveUrlInput.value, driveKeyInput.value);
   } catch (e) {
+    setDriveConn("off");
     driveSetupError.textContent = e.message;
     driveSetupError.hidden = false;
     return;
   }
   driveFolder = null;
-  showDriveSetup(false);
-  initDrive();
+  await refreshDriveConn();
+  if (driveLinkInput.value.trim()) checkDriveLink();
+  else { setLinkState("", DRIVE_EMPTY_HINT); driveLinkInput.focus(); }
 });
-driveClientInput.addEventListener("keydown", (e) => { if (e.key === "Enter") driveClientSave.click(); });
-driveClientChange.addEventListener("click", () => {
+[driveUrlInput, driveKeyInput].forEach(el => el.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") driveConnectBtn.click();
+}));
+
+driveChangeBtn.addEventListener("click", () => {
+  setDriveConn("off", "Enter a new uploader link or key");
   showDriveSetup(true, { canCancel: true });
-  driveLinkWrap.hidden = driveLinkMsg.hidden = true;
+  driveUrlInput.focus();
 });
-driveClientCancel.addEventListener("click", () => { showDriveSetup(false); initDrive(); });
-
-driveRedirectCopy.addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText(driveRedirectUri.textContent);
-    driveRedirectCopy.textContent = "Copied";
-  } catch {
-    getSelection().selectAllChildren(driveRedirectUri);
-    driveRedirectCopy.textContent = "Press Ctrl/Cmd+C";
-  }
-  setTimeout(() => { driveRedirectCopy.textContent = "Copy"; }, 2000);
-});
-
-// ── Step 1: connection (one Allow per person; renewed silently after that) ──
-let driveConn = "off";   // "unset" (no Client ID yet) | "off" | "connecting" | "on"
-
-function setDriveConn(state, sub) {
-  driveConn = state;
-  driveConnEl.className = `dconn is-${state}`;
-  driveConnTitle.textContent = {
-    unset: "Set up Google Drive",
-    off: "Google Drive",
-    connecting: "Google Drive",
-    on: "Connected to Google Drive",
-  }[state];
-  driveConnSub.textContent = sub || {
-    unset: "One-time step: paste your Google Client ID below.",
-    off: "Not connected",
-    connecting: "Waiting for you to allow access in the Google window…",
-    on: "Connected",
-  }[state];
-  driveConnectBtn.hidden = state === "on" || state === "unset";
-  driveConnectBtn.disabled = state === "connecting" || isRunning;
-  driveConnectBtn.textContent = state === "connecting" ? "Connecting…" : "Connect";
-  driveDisconnect.hidden = state !== "on";
-  driveLinkInput.disabled = state !== "on" || isRunning;
-  // No point showing the folder box before there's a Client ID to sign in with.
-  driveLinkWrap.hidden = driveLinkMsg.hidden = state === "unset";
-}
-
-async function refreshDriveConn() {
-  await Drive.ready;
-  if (!Drive.isConfigured()) { setDriveConn("unset"); showDriveSetup(true); return false; }
-  if (driveSetupEl.hidden) showDriveSetup(false);
-  if (!(await Drive.isConnected())) { setDriveConn("off"); return false; }
-  setDriveConn("on");
-  try {
-    const user = await Drive.account();
-    if (user.emailAddress) setDriveConn("on", user.emailAddress);
-  } catch (e) {
-    if (e instanceof Drive.NeedsAuthError) { setDriveConn("off"); return false; }
-  }
-  return true;
-}
-
-driveConnectBtn.addEventListener("click", async () => {
-  setDriveConn("connecting");
-  try {
-    await Drive.connect();
-  } catch (e) {
-    setDriveConn("off", e.message);
-    return;
-  }
-  if (await refreshDriveConn()) {
-    if (driveLinkInput.value.trim()) checkDriveLink();
-    else { setLinkState("", DRIVE_EMPTY_HINT); driveLinkInput.focus(); }
-  }
-});
+driveSetupCancel.addEventListener("click", () => initDrive());
 
 driveDisconnect.addEventListener("click", async () => {
   await Drive.disconnect();
   driveFolder = null;
   setDriveConn("off", "Disconnected");
-  setLinkState("", "");
+  showDriveSetup(true);
 });
 
 // ── Step 2: the folder link ──
@@ -750,8 +708,8 @@ async function checkDriveLink() {
   } catch (e) {
     if (seq !== checkSeq) return;
     if (e instanceof Drive.NeedsAuthError) {
-      setDriveConn("off", "Access expired. Connect again.");
-      setLinkState("", "");
+      setDriveConn("off", "The uploader rejected the key. Check it and Connect again.");
+      showDriveSetup(true);
     } else {
       setLinkState("bad", e.message);
     }
@@ -775,8 +733,7 @@ driveLinkInput.addEventListener("keydown", (e) => {
 async function destinationProblem() {
   if (saveDest !== "drive") return null;
   await Drive.ready;
-  if (!Drive.isConfigured()) return "Set up Google Drive under Save to (paste your Client ID), or switch to Computer.";
-  if (!(await Drive.isConnected())) return "Connect Google Drive under Save to, or switch to Computer.";
+  if (!Drive.isConnected()) return "Connect your Drive uploader under Save to, or switch to Computer.";
   if (!driveFolder) return "Paste a Google Drive folder link under Save to and wait for the checkmark.";
   return null;
 }
@@ -956,8 +913,9 @@ async function startQueue(startIndex = 0) {
           if (saved.needsAuth) {
             // Every later upload would fail the same way; stop so Continue can resume after reconnecting.
             isRunning = false;
-            setStatus("Google Drive access was lost. Click Connect under Save to, then Continue.");
-            setDriveConn("off", "Access expired. Connect again.");
+            setStatus("The Drive uploader rejected the key. Fix it under Save to, then Continue.");
+            setDriveConn("off", "The uploader rejected the key. Check it and Connect again.");
+            showDriveSetup(true);
           }
         }
       } else if (c?.stopped || !isRunning) {
@@ -1061,7 +1019,7 @@ async function retryPrompt(index) {
       } else {
         updateStatus(index, "failed");
         setStatus(`Prompt ${index + 1} regenerated but wasn't saved: ${saved.error}`);
-        if (saved.needsAuth) setDriveConn("off", "Access expired. Connect again.");
+        if (saved.needsAuth) { setDriveConn("off", "The uploader rejected the key. Check it and Connect again."); showDriveSetup(true); }
       }
     } else if (c?.stopped || !isRunning) {
       updateStatus(index, prevStatus);

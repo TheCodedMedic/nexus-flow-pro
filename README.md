@@ -26,7 +26,7 @@ extended into **Nexus Flow Pro**.
    (`000-name.jpg`), `Timestamp` (`00-15-name.jpg`, from a `[mm.ss]` tag at the start of the
    line), or prompt text only. Save to **Computer** (a chosen folder via the File System
    Access API, or `Downloads/nexus-flow`) or **Google Drive** (paste a folder link; it is
-   checked for write access and marked with a ✓). Drive needs a Google Client ID, pasted into the panel once:
+   checked for write access and marked with a ✓). Drive uses a small Google Apps Script uploader (no Google Cloud):
    see [`docs/google-drive-setup.md`](docs/google-drive-setup.md).
 4. **Theme** — the header button cycles System → Light → Dark; the choice is remembered.
 5. **Status row** — shows whether the content script on the Flow project tab is actually
@@ -48,7 +48,7 @@ nexus-flow-extension/
 │   ├── sidepanel.css          # Warm-neutral theme, light + dark
 │   ├── fonts/                 # Onest + Geist Mono (latin, OFL), bundled
 │   ├── theme.js               # Applies the saved light/dark choice before first paint
-│   ├── drive.js               # Google Drive: sign-in, folder-link check, upload with backoff
+│   ├── drive.js               # Google Drive via the Apps Script uploader: connect, folder check, upload
 │   └── sidepanel.js           # UI logic, queue driver, downloads, settings persistence
 └── icons/                     # logo.svg + 16 / 32 / 48 / 128 px PNGs rendered from it
 ```
@@ -166,10 +166,9 @@ if a step is missed.
 - All content-script logs use the `[NEXUSFLOW]` prefix — filter the Flow tab console by it to trace
   a run (which "+" was clicked, whether the picker opened, whether the reference was found, etc.).
 - `manifest.json` permissions: `storage`, `sidePanel`, `unlimitedStorage`, `scripting`,
-  `downloads`, `debugger`, `identity`; hosts: Flow (`flow.google.com`, `labs.google/fx`) and
-  `www.googleapis.com` (Drive). The `key` pins the extension ID to
-  `mmdhiajpiolojckcddjdebfnekpjhhdf`, so the Drive redirect URI
-  (`https://mmdhiajpiolojckcddjdebfnekpjhhdf.chromiumapp.org/`) is the same for every unpacked install.
+  `downloads`, `debugger`; hosts: Flow (`flow.google.com`, `labs.google/fx`) and the Apps Script
+  uploader (`script.google.com`, `script.googleusercontent.com`). The uploader script is
+  `docs/drive-uploader.gs`.
 
 ---
 

@@ -8,287 +8,137 @@
   </head>
   <body>
     <div class="app" id="app">
-      <header class="hero">
-        <div class="hero-brand">
-          <img class="hero-logo" src="../icons/icon-128.png" width="44" height="44" alt="" decoding="async" />
-          <div class="hero-titles">
-            <h1>Nexus Flow Pro</h1>
-            <span class="version-tag" id="versionTag">v2.2.4</span>
-          </div>
-          <div class="hero-actions">
-            <button type="button" class="hero-help" id="helpOpen" aria-haspopup="dialog" aria-controls="helpDialog" title="How to use">
-              <svg class="hero-help__icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path fill="currentColor" d="M13 9h-2V7h2m0 10h-2v-6h2m-1-9A10 10 0 0 0 2 12a10 10 0 0 0 10 10 10 10 0 0 0 10-10A10 10 0 0 0 12 2z"/>
-              </svg>
-            </button>
-          </div>
-        </div>
+      <header class="top">
+        <img class="top__logo" src="../icons/icon-48.png" width="28" height="28" alt="" decoding="async" />
+        <h1 class="top__name">Nexus Flow Pro</h1>
+        <span class="top__version" id="versionTag">v1.0.0</span>
+        <button type="button" class="icon-btn" id="helpOpen" aria-haspopup="dialog" aria-controls="helpDialog" title="How to use">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9.5 9.2a2.6 2.6 0 0 1 5 .9c0 1.7-2.5 2.2-2.5 3.9M12 17.2v.1"/><circle cx="12" cy="12" r="9.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+        </button>
       </header>
 
-      <!-- Help dialog -->
-      <dialog class="help-dialog" id="helpDialog" aria-labelledby="helpDialogTitle">
-        <div class="help-dialog__inner">
-          <h2 id="helpDialogTitle" class="help-dialog__title">Getting Started</h2>
-          <div class="help-dialog__copy">
-            <p class="lede">① Open your Google Flow project tab:<br/>
-              <a class="path-link" href="https://labs.google/fx/tools/flow/project/" target="_blank">
-                labs.google/fx/tools/flow/project/
-              </a>
-            </p>
-            <p class="lede">② Optionally upload a <strong>character reference image</strong> to keep your character consistent across all scenes.</p>
-            <p class="lede">③ Enter your prompts below — one per line. The queue updates live as you type.</p>
-            <p class="lede">④ Click <strong>Start Generation</strong>. Nexus Flow Pro submits each prompt automatically and downloads the result.</p>
-          </div>
-          <section class="help-dialog__advanced">
-            <h3 class="help-dialog__advanced-label">Random delay</h3>
-            <p class="help-dialog__advanced-body">After each generation, Nexus Flow Pro waits a random number of seconds within your set range before starting the next prompt. This keeps your account safe.</p>
-          </section>
-          <button type="button" class="btn btn-primary help-dialog__close" id="helpClose">Got it</button>
-        </div>
+      <!-- Connection + agent mode, one row -->
+      <div class="status-row" id="connBar">
+        <span class="status-row__dot" id="connDot"></span>
+        <span class="status-row__msg" id="connMsg">Checking connection…</span>
+        <a class="status-row__link" id="connLink" href="#" target="_blank" hidden></a>
+        <span class="chip" id="agentChip" hidden>Agent <b id="agentState">off</b></span>
+      </div>
+
+      <dialog class="help" id="helpDialog" aria-labelledby="helpDialogTitle">
+        <h2 id="helpDialogTitle">How it works</h2>
+        <ol class="help__steps">
+          <li>Open a Google Flow project tab.</li>
+          <li>Optional: add character references, click <b>Upload to project</b>, then <b>Hard refresh</b>. Every prompt will attach them.</li>
+          <li>Paste your prompts, one per line. Start a line with <code>[00.15]</code> to name the file by timestamp.</li>
+          <li>Click <b>Start</b>. Up to 5 prompts generate at once, 3 seconds apart, and each image is saved when it finishes, to your computer or a Google Drive folder.</li>
+        </ol>
+        <button type="button" class="btn btn--primary" id="helpClose">Got it</button>
       </dialog>
 
-      <!-- Connection status -->
-      <div class="conn-bar" id="connBar">
-        <span class="conn-dot" id="connDot"></span>
-        <span class="conn-msg" id="connMsg">Checking connection…</span>
-        <a class="conn-link" id="connLink" href="#" style="display:none" target="_blank"></a>
-      </div>
+      <!-- Prompts -->
+      <section class="card">
+        <div class="card__head">
+          <label for="prompts" class="label">Prompts</label>
+          <span class="meta" id="promptCount">One per line</span>
+        </div>
+        <textarea id="prompts" rows="6" spellcheck="true" placeholder="[00.05] Marcus Reed on a rooftop, city skyline at dusk, cinematic&#10;[00.12] Close-up of Marcus, troubled expression, moody lighting"></textarea>
+        <div class="card__foot">
+          <label for="txtUpload" class="btn btn--ghost btn--sm">
+            <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 15V4m0 0L8 8m4-4 4 4M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></svg>
+            Import .txt
+          </label>
+          <input type="file" id="txtUpload" accept=".txt" hidden />
+        </div>
+      </section>
 
-      <!-- Agent mode -->
-      <div class="agent-bar" id="agentBar" style="display:none">
-        <span class="agent-icon">⚡</span>
-        <span class="agent-msg" id="agentMsg"></span>
-        <span class="agent-badge" id="agentBadge"></span>
-      </div>
+      <!-- Queue -->
+      <section class="card card--flush" id="listSection" hidden>
+        <div class="card__head card__head--pad">
+          <span class="label">Queue</span>
+          <span class="meta" id="listCount"></span>
+        </div>
+        <div class="queue" id="promptList"></div>
+      </section>
 
-      <!-- Collapsible Accordion: Automated Batch Generation & Download -->
-      <details class="nx-accordion" id="autoPipelineAccordion">
-        <summary class="nx-accordion-summary">
-          <div class="summary-left">
-            <svg class="summary-chevron" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg>
-            <span class="summary-title">⚡ Automated Batch Pipeline</span>
+      <!-- Character references -->
+      <section class="card">
+        <div class="card__head">
+          <span class="label">Character references</span>
+          <button type="button" id="refImageClear" class="link-btn" hidden>Clear all</button>
+        </div>
+        <div class="refs" id="refImageList">
+          <label for="refImageUpload" class="refs__add" id="refImageLabel" title="Add reference images">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+            <span>Add</span>
+          </label>
+        </div>
+        <input type="file" id="refImageUpload" accept="image/*" multiple hidden />
+        <div class="card__foot card__foot--split">
+          <button type="button" id="loadRefsBtn" class="btn btn--secondary btn--sm" disabled>Upload to project</button>
+          <button type="button" id="hardRefreshBtn" class="btn btn--ghost btn--sm" title="Hard-refresh the Flow tab">Hard refresh</button>
+        </div>
+      </section>
+
+      <!-- Output -->
+      <section class="card card--rows">
+        <div class="row">
+          <label for="namingMode" class="label">File names</label>
+          <div class="select">
+            <select id="namingMode">
+              <option value="serial">Serial · 000-name.jpg</option>
+              <option value="timestamp">Timestamp · 00-15-name.jpg</option>
+              <option value="none">Prompt text only</option>
+            </select>
           </div>
-          <span class="summary-badge">Auto</span>
-        </summary>
-        <div class="nx-accordion-body">
-          <!-- Prompt input -->
-          <div class="field">
-            <div class="step-input-header">
-              <label for="prompts" class="field-label">Prompt Queue</label>
-              <span class="upload-hint">1 prompt per line</span>
-            </div>
-            <textarea id="prompts" rows="5" spellcheck="true" placeholder="Marcus Reed at a rooftop, city skyline at dusk, cinematic&#10;&#10;Close-up Marcus Reed, troubled expression, moody lighting&#10;&#10;Marcus at investigation board, pointing at connections"></textarea>
-            <div class="upload-row">
-              <label for="txtUpload" class="btn-txt-upload">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 1.5L18.5 9H13V3.5zM12 17v-4l-2 2-1.4-1.4L12 10l3.4 3.6L14 15l-2-2v4h-2z"/></svg>
-                Import .txt
-              </label>
-              <input type="file" id="txtUpload" accept=".txt" style="display:none" />
-            </div>
-          </div>
-
-          <!-- Status -->
-          <p class="status" id="status" role="status" aria-live="polite"></p>
-
-          <!-- Live prompt list -->
-          <div class="prompt-list-section" id="listSection" style="display:none">
-            <div class="list-header">
-              <span class="field-label">Queue</span>
-              <span class="list-count" id="listCount"></span>
-            </div>
-            <div class="prompt-list" id="promptList"></div>
-          </div>
-
-          <!-- Upscale toggle -->
-          <div class="upscale-row">
-            <div class="upscale-label-group">
-              <span class="timing-label">Upscale to 2K</span>
-              <span class="upscale-hint">Auto 2K download</span>
-            </div>
-            <label class="nx-toggle" for="upscaleToggle" title="Click 2K Upscaled in Flow's download menu automatically">
-              <input type="checkbox" id="upscaleToggle" />
-              <span class="nx-toggle__track"><span class="nx-toggle__thumb"></span></span>
-            </label>
-          </div>
-
-          <!-- Filename naming mode -->
-          <div class="naming-row">
-            <span class="timing-label">Name images by</span>
-            <div class="naming-select-wrap">
-              <select id="namingMode">
-                <option value="serial">Serial — 000-name.jpg</option>
-                <option value="timestamp">Timestamp — 00-00-name.jpg</option>
-                <option value="none">None — name only</option>
-              </select>
-              <svg class="select-chevron" viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M7 10l5 5 5-5z"/></svg>
+        </div>
+        <div class="row row--stack">
+          <div class="row__line">
+            <span class="label" id="destLabel">Save to</span>
+            <div class="seg" role="radiogroup" aria-labelledby="destLabel">
+              <button type="button" class="seg__opt" role="radio" aria-checked="true" data-dest="local">Computer</button>
+              <button type="button" class="seg__opt" role="radio" aria-checked="false" data-dest="drive">Google Drive</button>
             </div>
           </div>
 
-          <!-- Reference Image -->
-          <div class="ref-image-section">
-            <div class="ref-image-header">
-              <span class="field-label">Character Reference</span>
-            </div>
-            <div class="ref-image-controls">
-              <label for="refImageUpload" class="btn-ref-upload" id="refImageLabel">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
-                Upload Reference
-              </label>
-              <input type="file" id="refImageUpload" accept="image/*" multiple style="display:none" />
-              <button type="button" id="refImageClear" class="btn-ref-clear" style="display:none" title="Remove reference">✕ Clear</button>
-            </div>
-            <div id="refImageList" class="ref-image-list" style="display:none"></div>
-            <div class="ref-load-row">
-              <button type="button" id="loadRefsBtn" class="btn-load-refs" disabled title="Upload references to your Flow project">
-                ⬆ Load to Project
-              </button>
-              <button type="button" id="hardRefreshBtn" class="btn-hard-refresh" title="Hard-refresh the Flow tab">
-                ⟳ Hard Refresh
-              </button>
-            </div>
-          </div>
-
-          <!-- Download folder -->
-          <div class="folder-row">
-            <svg viewBox="0 0 24 24" class="folder-icon" fill="currentColor" aria-hidden="true">
-              <path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
-            </svg>
-            <div class="folder-display" id="folderDisplay">
-              <span id="folderName">~/Downloads/nexus-flow</span>
-            </div>
-            <button type="button" class="btn-choose-folder" id="chooseFolderBtn">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
-              Choose Folder
+          <div id="destLocal">
+            <button type="button" class="folder" id="chooseFolderBtn" title="Choose a folder">
+              <span class="folder__name" id="folderName">Downloads/nexus-flow</span>
+              <span class="folder__action">Change</span>
             </button>
-            <input type="text" id="downloadFolder" value="nexus-flow" style="display:none" />
+            <input type="text" id="downloadFolder" value="nexus-flow" hidden />
           </div>
 
-          <!-- Parallel & Delay Row -->
-          <div class="timing-row">
-            <span class="timing-label">Parallel</span>
-            <div class="input-wrap timing-input-wrap" style="width:55px">
-              <input type="number" id="parallelCount" min="1" max="10" step="1" value="5" placeholder="5" />
-            </div>
-            <span class="timing-label" style="margin-left:auto">Delay</span>
-            <div class="input-wrap timing-input-wrap" style="width:52px">
-              <input type="number" id="waitMin" min="0" step="1" value="2" />
-              <span class="suffix">s</span>
-            </div>
-            <span class="timing-label">to</span>
-            <div class="input-wrap timing-input-wrap" style="width:52px">
-              <input type="number" id="waitMax" min="0" step="1" value="5" />
-              <span class="suffix">s</span>
-            </div>
-          </div>
+          <div id="destDrive" class="drive" hidden>
+            <p class="hint" id="driveNotSetUp" hidden>Google Drive isn't set up in this copy of the extension yet. See <code>docs/google-drive-setup.md</code>.</p>
 
-          <div class="actions">
-            <button type="button" id="run" class="btn btn-primary" disabled>▶ Start Generation</button>
-            <button type="button" id="continueBtn" class="btn btn-continue" style="display:none">▶ Continue</button>
-            <button type="button" id="stop" class="btn btn-quiet">■ Stop</button>
+            <div class="drive__body" id="driveBody">
+              <div class="dlink" id="driveLinkWrap">
+                <input type="url" id="driveLinkInput" class="dlink__input" placeholder="Paste a Google Drive folder link"
+                       autocomplete="off" spellcheck="false" aria-describedby="driveLinkMsg" />
+                <span class="dlink__state" id="driveLinkState" aria-hidden="true"></span>
+              </div>
+              <p class="dlink__msg" id="driveLinkMsg" role="status" aria-live="polite"></p>
+              <div class="acct" id="driveAcct" hidden>
+                <span class="acct__email" id="driveEmail"></span>
+                <button type="button" class="link-btn" id="driveDisconnect">Disconnect</button>
+              </div>
+            </div>
           </div>
         </div>
-      </details>
+      </section>
 
-      <!-- Collapsible Accordion: Step-by-Step Prompt Sender -->
-      <details class="nx-accordion nx-accordion-teal" id="stepSenderAccordion">
-        <summary class="nx-accordion-summary">
-          <div class="summary-left">
-            <svg class="summary-chevron" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg>
-            <span class="summary-title">🖐 Quick Prompt Sender</span>
-          </div>
-          <span class="summary-badge summary-badge-teal">Step-by-Step</span>
-        </summary>
-        <div class="nx-accordion-body">
-          <div class="field">
-            <div class="step-input-header">
-              <label for="stepPrompts" class="field-label">Prompts List</label>
-              <button type="button" class="btn-clear-step" id="stepClearBtn" style="display:none">✕ Clear all</button>
-            </div>
-            <textarea id="stepPrompts" rows="4" spellcheck="true" placeholder="Paste your prompts here (one per line)...&#10;&#10;[00.05] Marcus Reed walking down the street, cinematic&#10;[00.12] Close-up Marcus Reed at coffee shop"></textarea>
-            <div class="upload-row">
-              <label for="stepTxtUpload" class="btn-txt-upload">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 1.5L18.5 9H13V3.5zM12 17v-4l-2 2-1.4-1.4L12 10l3.4 3.6L14 15l-2-2v4h-2z"/></svg>
-                Import .txt
-              </label>
-              <input type="file" id="stepTxtUpload" accept=".txt" style="display:none" />
-              <span class="upload-hint" id="stepCountHint" style="margin-left:auto">0 prompts</span>
-            </div>
-          </div>
-
-          <!-- Live Step Prompts List with Enter Button -->
-          <div class="step-list-wrap" id="stepListWrap" style="display:none">
-            <div class="step-list-header">
-              <span class="field-label" style="font-size:10px">Click Enter to Send:</span>
-              <span class="list-count" id="stepListCount">0 left</span>
-            </div>
-            <div class="step-prompt-list" id="stepPromptList"></div>
-          </div>
-
-          <p class="step-status" id="stepStatus" style="display:none"></p>
+      <!-- Run -->
+      <footer class="run">
+        <p class="run__status" id="status" role="status" aria-live="polite"></p>
+        <div class="run__actions">
+          <button type="button" id="run" class="btn btn--primary btn--grow" disabled>Start</button>
+          <button type="button" id="continueBtn" class="btn btn--primary btn--grow" hidden>Continue</button>
+          <button type="button" id="stop" class="btn btn--secondary">Stop</button>
         </div>
-      </details>
-
-      <!-- Collapsible Accordion: Bulk Project Downloader -->
-      <details class="nx-accordion nx-accordion-cyan" id="serialDownloadAccordion" open>
-        <summary class="nx-accordion-summary">
-          <div class="summary-left">
-            <svg class="summary-chevron" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg>
-            <span class="summary-title">📦 Download All Project Images</span>
-          </div>
-          <span class="summary-badge summary-badge-cyan">Export</span>
-        </summary>
-        <div class="nx-accordion-body">
-          <div class="serial-controls-row">
-            <div class="serial-field-group">
-              <label for="serialStartNum" class="timing-label">Start #</label>
-              <div class="input-wrap serial-input-wrap">
-                <input type="number" id="serialStartNum" value="1" min="0" step="1" />
-              </div>
-            </div>
-            <div class="serial-field-group serial-name-group">
-              <label for="serialPrefix" class="timing-label">Suffix</label>
-              <div class="input-wrap serial-input-wrap">
-                <input type="text" id="serialPrefix" value="image" placeholder="image" />
-              </div>
-            </div>
-            <div class="serial-field-group">
-              <label for="serialPadDigits" class="timing-label">Digits</label>
-              <div class="input-wrap serial-input-wrap">
-                <input type="number" id="serialPadDigits" value="3" min="1" max="6" step="1" />
-              </div>
-            </div>
-          </div>
-
-          <div class="serial-options-row">
-            <label class="serial-checkbox-label" title="Exclude reference/asset images from download count">
-              <input type="checkbox" id="serialExcludeRef" checked />
-              <span>Exclude refs</span>
-            </label>
-            <div class="serial-exclude-pat-wrap" id="serialExcludePatWrap" title="Match keyword">
-              <span class="timing-label" style="font-size:10px;color:var(--text-muted)">Named:</span>
-              <div class="input-wrap serial-input-wrap" style="width:85px">
-                <input type="text" id="serialExcludePat" value="reference" placeholder="reference" />
-              </div>
-            </div>
-          </div>
-
-          <div id="serialScanInfo" class="serial-scan-info" style="display:none">
-            <div class="serial-info-badge">
-              <span id="serialCountBadge">0 images</span>
-              <span class="serial-dot">•</span>
-              <span id="serialRangeBadge">#001 → #000</span>
-            </div>
-          </div>
-
-          <div class="serial-actions-row">
-            <button type="button" id="serialScanBtn" class="btn btn-serial-scan">🔍 Scan</button>
-            <button type="button" id="serialDownloadBtn" class="btn btn-serial-download" disabled>⤓ Download All</button>
-            <button type="button" id="serialStopBtn" class="btn btn-quiet btn-serial-stop" style="display:none">■ Stop</button>
-          </div>
-          <p class="serial-status" id="serialStatus" style="display:none"></p>
-        </div>
-      </details>
+      </footer>
     </div>
+    <script src="drive.js" defer></script>
     <script src="sidepanel.js" defer></script>
   </body>
 </html>

@@ -26,7 +26,7 @@ extended into **Nexus Flow Pro**.
    (`000-name.jpg`), `Timestamp` (`00-15-name.jpg`, from a `[mm.ss]` tag at the start of the
    line), or prompt text only. Save to **Computer** (a chosen folder via the File System
    Access API, or `Downloads/nexus-flow`) or **Google Drive** (paste a folder link; it is
-   checked for write access and marked with a ✓). Drive needs a one-time Google Cloud setup:
+   checked for write access and marked with a ✓). Drive needs a Google Client ID, pasted into the panel once:
    see [`docs/google-drive-setup.md`](docs/google-drive-setup.md).
 4. **Theme** — the header button cycles System → Light → Dark; the choice is remembered.
 5. **Status row** — shows whether the content script on the Flow project tab is actually
@@ -168,7 +168,8 @@ if a step is missed.
 - `manifest.json` permissions: `storage`, `sidePanel`, `unlimitedStorage`, `scripting`,
   `downloads`, `debugger`, `identity`; hosts: Flow (`flow.google.com`, `labs.google/fx`) and
   `www.googleapis.com` (Drive). The `key` pins the extension ID to
-  `mmdhiajpiolojckcddjdebfnekpjhhdf` so the Drive OAuth client works for every unpacked install.
+  `mmdhiajpiolojckcddjdebfnekpjhhdf`, so the Drive redirect URI
+  (`https://mmdhiajpiolojckcddjdebfnekpjhhdf.chromiumapp.org/`) is the same for every unpacked install.
 
 ---
 

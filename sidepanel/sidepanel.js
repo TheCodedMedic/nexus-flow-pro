@@ -54,6 +54,16 @@ const driveConnTitle   = document.getElementById("driveConnTitle");
 const driveConnSub     = document.getElementById("driveConnSub");
 const driveConnectBtn  = document.getElementById("driveConnectBtn");
 const driveDisconnect  = document.getElementById("driveDisconnect");
+const driveSetupEl     = document.getElementById("driveSetup");
+const driveClientInput = document.getElementById("driveClientIdInput");
+const driveClientSave  = document.getElementById("driveClientIdSave");
+const driveClientCancel = document.getElementById("driveClientIdCancel");
+const driveSetupError  = document.getElementById("driveSetupError");
+const driveRedirectUri = document.getElementById("driveRedirectUri");
+const driveRedirectCopy = document.getElementById("driveRedirectCopy");
+const driveClientLine  = document.getElementById("driveClientLine");
+const driveClientShort = document.getElementById("driveClientIdShort");
+const driveClientChange = document.getElementById("driveClientIdChange");
 
 const { version } = chrome.runtime.getManifest();
 versionTagEl.textContent = `v${version}`;
@@ -102,6 +112,8 @@ function setBusy(busy) {
   destOpts.forEach(b => { b.disabled = busy; });
   driveDisconnect.disabled = busy;
   driveConnectBtn.disabled = busy || driveConn === "unset";
+  driveClientChange.disabled = busy;
+  driveClientSave.disabled = busy;
   driveLinkInput.disabled  = busy || driveConn !== "on";
   stopBtn.disabled        = !busy;
   loadRefsBtn.disabled    = busy || refImages.length === 0;
@@ -569,20 +581,67 @@ function setDest(dest, { persist = true } = {}) {
 
 destOpts.forEach(b => b.addEventListener("click", () => setDest(b.dataset.dest)));
 
-// ── Step 1: connection (one Allow per person; Chrome remembers it) ──
-let driveConn = "off";   // "unset" (no Client ID in this build) | "off" | "connecting" | "on"
+// ── Step 0: Google Client ID (once per install; tells Google which app is asking) ──
+driveRedirectUri.textContent = Drive.redirectUri();
+
+function showDriveSetup(open, { canCancel = false } = {}) {
+  driveSetupEl.hidden = !open;
+  driveClientCancel.hidden = !canCancel;
+  driveSetupError.hidden = true;
+  if (open) {
+    driveClientInput.value = Drive.getClientId();
+    driveClientInput.focus();
+  }
+  const configured = Drive.isConfigured();
+  driveClientLine.hidden = open || !configured;
+  driveClientShort.textContent = configured ? Drive.getClientId() : "";
+  driveClientShort.title = Drive.getClientId();
+}
+
+driveClientSave.addEventListener("click", async () => {
+  try {
+    await Drive.setClientId(driveClientInput.value);
+  } catch (e) {
+    driveSetupError.textContent = e.message;
+    driveSetupError.hidden = false;
+    return;
+  }
+  driveFolder = null;
+  showDriveSetup(false);
+  initDrive();
+});
+driveClientInput.addEventListener("keydown", (e) => { if (e.key === "Enter") driveClientSave.click(); });
+driveClientChange.addEventListener("click", () => {
+  showDriveSetup(true, { canCancel: true });
+  driveLinkWrap.hidden = driveLinkMsg.hidden = true;
+});
+driveClientCancel.addEventListener("click", () => { showDriveSetup(false); initDrive(); });
+
+driveRedirectCopy.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(driveRedirectUri.textContent);
+    driveRedirectCopy.textContent = "Copied";
+  } catch {
+    getSelection().selectAllChildren(driveRedirectUri);
+    driveRedirectCopy.textContent = "Press Ctrl/Cmd+C";
+  }
+  setTimeout(() => { driveRedirectCopy.textContent = "Copy"; }, 2000);
+});
+
+// ── Step 1: connection (one Allow per person; renewed silently after that) ──
+let driveConn = "off";   // "unset" (no Client ID yet) | "off" | "connecting" | "on"
 
 function setDriveConn(state, sub) {
   driveConn = state;
   driveConnEl.className = `dconn is-${state}`;
   driveConnTitle.textContent = {
-    unset: "Google Drive isn't set up",
+    unset: "Set up Google Drive",
     off: "Google Drive",
     connecting: "Google Drive",
     on: "Connected to Google Drive",
   }[state];
   driveConnSub.textContent = sub || {
-    unset: "The extension owner adds a Google Client ID once (docs/google-drive-setup.md). Then Connect appears here.",
+    unset: "One-time step: paste your Google Client ID below.",
     off: "Not connected",
     connecting: "Waiting for you to allow access in the Google window…",
     on: "Connected",
@@ -592,10 +651,14 @@ function setDriveConn(state, sub) {
   driveConnectBtn.textContent = state === "connecting" ? "Connecting…" : "Connect";
   driveDisconnect.hidden = state !== "on";
   driveLinkInput.disabled = state !== "on" || isRunning;
+  // No point showing the folder box before there's a Client ID to sign in with.
+  driveLinkWrap.hidden = driveLinkMsg.hidden = state === "unset";
 }
 
 async function refreshDriveConn() {
-  if (!Drive.isConfigured()) { setDriveConn("unset"); return false; }
+  await Drive.ready;
+  if (!Drive.isConfigured()) { setDriveConn("unset"); showDriveSetup(true); return false; }
+  if (driveSetupEl.hidden) showDriveSetup(false);
   if (!(await Drive.isConnected())) { setDriveConn("off"); return false; }
   setDriveConn("on");
   try {
@@ -711,7 +774,8 @@ driveLinkInput.addEventListener("keydown", (e) => {
 // Blocks a run that would generate images with nowhere to put them.
 async function destinationProblem() {
   if (saveDest !== "drive") return null;
-  if (!Drive.isConfigured()) return "Google Drive isn't set up in this copy of the extension. Switch Save to Computer.";
+  await Drive.ready;
+  if (!Drive.isConfigured()) return "Set up Google Drive under Save to (paste your Client ID), or switch to Computer.";
   if (!(await Drive.isConnected())) return "Connect Google Drive under Save to, or switch to Computer.";
   if (!driveFolder) return "Paste a Google Drive folder link under Save to and wait for the checkmark.";
   return null;

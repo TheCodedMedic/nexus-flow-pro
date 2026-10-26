@@ -414,8 +414,22 @@ textarea:focus { border-color: var(--line-2); background: var(--surface); }
 .dlink__msg a, .dlink__msg .link-btn { margin-left: 6px; font-size: 12px; }
 .dlink__msg a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
 
-.acct { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--faint); }
-.acct__email { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dconn {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  background: var(--sunken);
+}
+.dconn__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.dconn__text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.dconn__title { font-size: 12.5px; font-weight: 600; }
+.dconn__sub { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dconn .btn, .dconn .link-btn { flex: none; }
+.dconn.is-on { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: var(--ok-soft); }
+.dconn.is-on .dconn__dot { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.dconn.is-on .dconn__title { color: var(--ok); }
+.dconn.is-unset .dconn__sub { white-space: normal; }
+.dlink__input:disabled { opacity: .55; cursor: not-allowed; }
 
 /* ── Run bar ── */
 .run {

@@ -130,18 +130,22 @@
           </div>
 
           <div id="destDrive" class="drive" hidden>
-            <div class="drive__body" id="driveBody">
-              <div class="dlink" id="driveLinkWrap">
-                <input type="url" id="driveLinkInput" class="dlink__input" placeholder="Paste a Google Drive folder link"
-                       autocomplete="off" spellcheck="false" aria-describedby="driveLinkMsg" />
-                <span class="dlink__state" id="driveLinkState" aria-hidden="true"></span>
-              </div>
-              <p class="dlink__msg" id="driveLinkMsg" role="status" aria-live="polite"></p>
-              <div class="acct" id="driveAcct" hidden>
-                <span class="acct__email" id="driveEmail"></span>
-                <button type="button" class="link-btn" id="driveDisconnect">Disconnect</button>
-              </div>
+            <div class="dconn is-off" id="driveConn">
+              <span class="dconn__dot" aria-hidden="true"></span>
+              <span class="dconn__text">
+                <span class="dconn__title" id="driveConnTitle">Google Drive</span>
+                <span class="dconn__sub" id="driveConnSub">Not connected</span>
+              </span>
+              <button type="button" class="btn btn--primary btn--sm" id="driveConnectBtn">Connect</button>
+              <button type="button" class="link-btn" id="driveDisconnect" hidden>Disconnect</button>
             </div>
+
+            <div class="dlink" id="driveLinkWrap">
+              <input type="url" id="driveLinkInput" class="dlink__input" placeholder="Paste a Google Drive folder link"
+                     autocomplete="off" spellcheck="false" aria-label="Google Drive folder link" aria-describedby="driveLinkMsg" />
+              <span class="dlink__state" id="driveLinkState" aria-hidden="true"></span>
+            </div>
+            <p class="dlink__msg" id="driveLinkMsg" role="status" aria-live="polite"></p>
           </div>
         </div>
       </section>

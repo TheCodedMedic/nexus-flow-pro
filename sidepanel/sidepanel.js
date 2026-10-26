@@ -49,8 +49,10 @@ const destDriveEl      = document.getElementById("destDrive");
 const driveLinkWrap    = document.getElementById("driveLinkWrap");
 const driveLinkInput   = document.getElementById("driveLinkInput");
 const driveLinkMsg     = document.getElementById("driveLinkMsg");
-const driveAcctEl      = document.getElementById("driveAcct");
-const driveEmailEl     = document.getElementById("driveEmail");
+const driveConnEl      = document.getElementById("driveConn");
+const driveConnTitle   = document.getElementById("driveConnTitle");
+const driveConnSub     = document.getElementById("driveConnSub");
+const driveConnectBtn  = document.getElementById("driveConnectBtn");
 const driveDisconnect  = document.getElementById("driveDisconnect");
 
 const { version } = chrome.runtime.getManifest();
@@ -98,7 +100,9 @@ function setBusy(busy) {
   txtUploadEl.disabled    = busy;
   chooseFolderBtn.disabled = busy;
   destOpts.forEach(b => { b.disabled = busy; });
-  [driveLinkInput, driveDisconnect].forEach(el => { el.disabled = busy; });
+  driveDisconnect.disabled = busy;
+  driveConnectBtn.disabled = busy || driveConn === "unset";
+  driveLinkInput.disabled  = busy || driveConn !== "on";
   stopBtn.disabled        = !busy;
   loadRefsBtn.disabled    = busy || refImages.length === 0;
   refreshRunButton();
@@ -565,8 +569,68 @@ function setDest(dest, { persist = true } = {}) {
 
 destOpts.forEach(b => b.addEventListener("click", () => setDest(b.dataset.dest)));
 
+// ── Step 1: connection (one Allow per person; Chrome remembers it) ──
+let driveConn = "off";   // "unset" (no Client ID in this build) | "off" | "connecting" | "on"
+
+function setDriveConn(state, sub) {
+  driveConn = state;
+  driveConnEl.className = `dconn is-${state}`;
+  driveConnTitle.textContent = {
+    unset: "Google Drive isn't set up",
+    off: "Google Drive",
+    connecting: "Google Drive",
+    on: "Connected to Google Drive",
+  }[state];
+  driveConnSub.textContent = sub || {
+    unset: "The extension owner adds a Google Client ID once (docs/google-drive-setup.md). Then Connect appears here.",
+    off: "Not connected",
+    connecting: "Waiting for you to allow access in the Google window…",
+    on: "Connected",
+  }[state];
+  driveConnectBtn.hidden = state === "on" || state === "unset";
+  driveConnectBtn.disabled = state === "connecting" || isRunning;
+  driveConnectBtn.textContent = state === "connecting" ? "Connecting…" : "Connect";
+  driveDisconnect.hidden = state !== "on";
+  driveLinkInput.disabled = state !== "on" || isRunning;
+}
+
+async function refreshDriveConn() {
+  if (!Drive.isConfigured()) { setDriveConn("unset"); return false; }
+  if (!(await Drive.isConnected())) { setDriveConn("off"); return false; }
+  setDriveConn("on");
+  try {
+    const user = await Drive.account();
+    if (user.emailAddress) setDriveConn("on", user.emailAddress);
+  } catch (e) {
+    if (e instanceof Drive.NeedsAuthError) { setDriveConn("off"); return false; }
+  }
+  return true;
+}
+
+driveConnectBtn.addEventListener("click", async () => {
+  setDriveConn("connecting");
+  try {
+    await Drive.connect();
+  } catch (e) {
+    setDriveConn("off", e.message);
+    return;
+  }
+  if (await refreshDriveConn()) {
+    if (driveLinkInput.value.trim()) checkDriveLink();
+    else { setLinkState("", DRIVE_EMPTY_HINT); driveLinkInput.focus(); }
+  }
+});
+
+driveDisconnect.addEventListener("click", async () => {
+  await Drive.disconnect();
+  driveFolder = null;
+  setDriveConn("off", "Disconnected");
+  setLinkState("", "");
+});
+
+// ── Step 2: the folder link ──
 // state: "" | "checking" | "ok" | "bad"
-function setLinkState(state, message, { allowButton = false } = {}) {
+function setLinkState(state, message) {
   driveLinkWrap.className = "dlink" + (state ? ` is-${state}` : "");
   driveLinkMsg.className = "dlink__msg" + (state === "ok" || state === "bad" ? ` is-${state}` : "");
   driveLinkMsg.textContent = "";
@@ -585,57 +649,31 @@ function setLinkState(state, message, { allowButton = false } = {}) {
     return;
   }
   driveLinkMsg.textContent = message || "";
-  if (allowButton) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "link-btn";
-    btn.textContent = "Allow access";
-    btn.addEventListener("click", () => checkDriveLink({ interactive: true }));
-    driveLinkMsg.append(btn);
-  }
 }
 
-async function showAccount() {
-  try {
-    const user = await Drive.account();
-    driveEmailEl.textContent = user.emailAddress ? `Uploading as ${user.emailAddress}` : "Connected to Google Drive";
-    driveAcctEl.hidden = false;
-  } catch {
-    driveAcctEl.hidden = true;
-  }
+const DRIVE_EMPTY_HINT = "Paste the link of a folder you can edit.";
+
+async function initDrive() {
+  const connected = await refreshDriveConn();
+  if (!connected) { setLinkState("", ""); return; }
+  if (driveLinkInput.value.trim()) checkDriveLink();
+  else setLinkState("", DRIVE_EMPTY_HINT);
 }
 
-const DRIVE_EMPTY_HINT = "Paste the link of a folder you can edit. Google asks you to allow access the first time.";
-const DRIVE_NOT_SET_UP =
-  "Uploads aren't switched on in this copy yet: add your Google Client ID to manifest.json (see docs/google-drive-setup.md), then reload the extension.";
-
-function initDrive() {
-  if (driveLinkInput.value.trim()) checkDriveLink({ interactive: false });
-  else setLinkState("", Drive.isConfigured() ? DRIVE_EMPTY_HINT : `${DRIVE_EMPTY_HINT} ${DRIVE_NOT_SET_UP}`);
-}
-
-/**
- * Verify the pasted link: it must be a Drive folder this account can add files to.
- * interactive=true (the user just pasted/typed) may open Google's one-time Allow popup;
- * interactive=false (restoring on panel open) never does, and offers a button instead.
- */
-async function checkDriveLink({ interactive }) {
+// Verify the pasted link: it must be a Drive folder this account can add files to.
+async function checkDriveLink() {
   const seq = ++checkSeq;
   const text = driveLinkInput.value.trim();
   driveFolder = null;
   chrome.storage.local.set({ nexusDriveLink: text, nexusDriveFolder: null });
 
-  if (!text) { initDrive(); return; }
+  if (driveConn !== "on") { setLinkState("", ""); return; }
+  if (!text) { setLinkState("", DRIVE_EMPTY_HINT); return; }
   const ref = Drive.parseFolderRef(text);
   if (!ref) { setLinkState("bad", "That isn't a Google Drive folder link. Copy it from the folder's Share menu or address bar."); return; }
-  if (!Drive.isConfigured()) { setLinkState("bad", `The link looks right. ${DRIVE_NOT_SET_UP}`); return; }
 
   setLinkState("checking", "Checking access…");
   try {
-    if (!(await Drive.isConnected())) {
-      if (!interactive) { setLinkState("bad", "Google Drive needs your permission to upload.", { allowButton: true }); return; }
-      await Drive.connect();
-    }
     const folder = await Drive.getFolder(ref);
     if (seq !== checkSeq) return;
     if (!folder.canAdd) {
@@ -646,12 +684,11 @@ async function checkDriveLink({ interactive }) {
     chrome.storage.local.set({ nexusDriveFolder: folder });
     setLinkState("ok");
     driveLinkInput.scrollLeft = 0;   // show the start of the link, not the tail
-    showAccount();
   } catch (e) {
     if (seq !== checkSeq) return;
     if (e instanceof Drive.NeedsAuthError) {
-      driveAcctEl.hidden = true;
-      setLinkState("bad", "Google Drive needs your permission to upload.", { allowButton: true });
+      setDriveConn("off", "Access expired. Connect again.");
+      setLinkState("", "");
     } else {
       setLinkState("bad", e.message);
     }
@@ -660,30 +697,23 @@ async function checkDriveLink({ interactive }) {
 
 driveLinkInput.addEventListener("input", () => {
   clearTimeout(checkTimer);
-  checkTimer = setTimeout(() => checkDriveLink({ interactive: true }), 500);
+  checkTimer = setTimeout(checkDriveLink, 500);
 });
 driveLinkInput.addEventListener("paste", () => {
   clearTimeout(checkTimer);
   // let the pasted text land in the input first
-  checkTimer = setTimeout(() => checkDriveLink({ interactive: true }), 0);
+  checkTimer = setTimeout(checkDriveLink, 0);
 });
 driveLinkInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { clearTimeout(checkTimer); checkDriveLink({ interactive: true }); }
-});
-
-driveDisconnect.addEventListener("click", async () => {
-  await Drive.disconnect();
-  driveFolder = null;
-  driveAcctEl.hidden = true;
-  setLinkState("bad", "Disconnected. Uploading needs your permission again.", { allowButton: true });
+  if (e.key === "Enter") { clearTimeout(checkTimer); checkDriveLink(); }
 });
 
 // Blocks a run that would generate images with nowhere to put them.
 async function destinationProblem() {
   if (saveDest !== "drive") return null;
   if (!Drive.isConfigured()) return "Google Drive isn't set up in this copy of the extension. Switch Save to Computer.";
+  if (!(await Drive.isConnected())) return "Connect Google Drive under Save to, or switch to Computer.";
   if (!driveFolder) return "Paste a Google Drive folder link under Save to and wait for the checkmark.";
-  if (!(await Drive.isConnected())) return "Google Drive needs your permission. Click Allow access under Save to.";
   return null;
 }
 
@@ -862,8 +892,8 @@ async function startQueue(startIndex = 0) {
           if (saved.needsAuth) {
             // Every later upload would fail the same way; stop so Continue can resume after reconnecting.
             isRunning = false;
-            setStatus("Google Drive access was lost. Click Allow access under Save to, then Continue.");
-            checkDriveLink({ interactive: false });
+            setStatus("Google Drive access was lost. Click Connect under Save to, then Continue.");
+            setDriveConn("off", "Access expired. Connect again.");
           }
         }
       } else if (c?.stopped || !isRunning) {
@@ -967,7 +997,7 @@ async function retryPrompt(index) {
       } else {
         updateStatus(index, "failed");
         setStatus(`Prompt ${index + 1} regenerated but wasn't saved: ${saved.error}`);
-        if (saved.needsAuth) checkDriveLink({ interactive: false });
+        if (saved.needsAuth) setDriveConn("off", "Access expired. Connect again.");
       }
     } else if (c?.stopped || !isRunning) {
       updateStatus(index, prevStatus);

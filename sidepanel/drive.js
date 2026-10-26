@@ -1,27 +1,30 @@
 // Google Drive through a Google Apps Script "uploader" (docs/drive-uploader.gs) that one
 // person deploys under their own Google account. The extension posts images to it with a
-// shared key; no Google Cloud project, Client ID or per-user sign-in is needed. Files are
+// fixed shared key; no Google Cloud project, Client ID or per-user sign-in is needed. Files are
 // owned by the uploader's account. Loaded before sidepanel.js, which uses `Drive`.
 
 const Drive = (() => {
-  // Ship a build where nobody has to paste anything: fill these in.
+  // Ship a build where nobody has to paste anything: fill this in.
   const BUILT_IN_URL = "";
-  const BUILT_IN_KEY = "";
+  // Every uploader uses this key, so nobody has to enter one. It must match KEY in
+  // docs/drive-uploader.gs. It only stops casual misuse of an uploader link; the link
+  // itself is what to keep private.
+  const KEY = "Nexus";
 
   const URL_RE = /^https:\/\/script\.google\.com\/(?:a\/macros\/[^/]+|macros)\/s\/[\w-]+\/exec\/?$/;
-  const STORE_KEY = "nexusDriveUploader";   // chrome.storage.local: { url, key, email }
+  const STORE_KEY = "nexusDriveUploader";   // chrome.storage.local: { url, email }
 
   class NeedsAuthError extends Error {}
 
-  let uploader = { url: BUILT_IN_URL, key: BUILT_IN_KEY, email: "" };
+  let uploader = { url: BUILT_IN_URL, email: "" };
 
   const ready = (async () => {
     const r = await chrome.storage.local.get(STORE_KEY);
-    if (r[STORE_KEY]?.url) uploader = { ...uploader, ...r[STORE_KEY] };
+    if (r[STORE_KEY]?.url) uploader = { url: r[STORE_KEY].url, email: r[STORE_KEY].email || "" };
   })();
 
   function isValidUrl(url) { return URL_RE.test((url || "").trim()); }
-  function isConfigured() { return isValidUrl(uploader.url) && !!uploader.key; }
+  function isConfigured() { return isValidUrl(uploader.url); }
   function isConnected() { return isConfigured() && !!uploader.email; }
   function getUploader() { return { ...uploader }; }
 
@@ -31,14 +34,14 @@ const Drive = (() => {
   function backoffMs(attempt) { return 1000 * 2 ** (attempt - 1) + Math.floor(Math.random() * 500); }
 
   async function call(action, payload = {}, target = uploader, attempt = 1) {
-    if (!isValidUrl(target.url) || !target.key) throw new NeedsAuthError("Connect your Drive uploader first.");
+    if (!isValidUrl(target.url)) throw new NeedsAuthError("Connect your Drive uploader first.");
     let res, text;
     try {
       // text/plain keeps this a "simple" request: Apps Script can't answer a CORS preflight.
       res = await fetch(target.url.trim(), {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({ action, key: target.key, ...payload }),
+        body: JSON.stringify({ action, key: KEY, ...payload }),
       });
       text = await res.text();
     } catch {
@@ -55,25 +58,26 @@ const Drive = (() => {
       throw new Error("The uploader link didn't answer properly. Check it ends in /exec and was deployed with “Who has access: Anyone”.");
     }
     if (!data.ok) {
-      if (/wrong key/i.test(data.error || "")) throw new NeedsAuthError(data.error);
+      if (/wrong key/i.test(data.error || "")) {
+        throw new NeedsAuthError('The uploader script\'s password isn\'t "Nexus". Set KEY = "Nexus" in the script and deploy a new version.');
+      }
       throw new Error(data.error || "The Drive uploader returned an error.");
     }
     return data;
   }
 
-  // Try the link + key; on success remember them (and whose Drive they upload to).
-  async function connect(url, key) {
-    url = (url || "").trim(); key = (key || "").trim();
+  // Try the link; on success remember it (and which account uploads through it).
+  async function connect(url) {
+    url = (url || "").trim();
     if (!isValidUrl(url)) throw new Error("That isn't an uploader link. It looks like https://script.google.com/macros/s/…/exec");
-    if (!key) throw new Error("Enter the key from the script.");
-    const r = await call("ping", {}, { url, key });
-    uploader = { url, key, email: r.email || "" };
+    const r = await call("ping", {}, { url });
+    uploader = { url, email: r.email || "" };
     await chrome.storage.local.set({ [STORE_KEY]: uploader });
     return uploader.email;
   }
 
   async function disconnect() {
-    uploader = { url: BUILT_IN_URL, key: BUILT_IN_KEY, email: "" };
+    uploader = { url: BUILT_IN_URL, email: "" };
     await chrome.storage.local.remove(STORE_KEY);
   }
 

@@ -31,6 +31,10 @@ const promptListEl     = document.getElementById("promptList");
 const listCountEl      = document.getElementById("listCount");
 const downloadFolderEl = document.getElementById("downloadFolder");
 const namingModeEl     = document.getElementById("namingMode");
+const namingBtn        = document.getElementById("namingBtn");
+const namingValueEl    = document.getElementById("namingValue");
+const namingListEl     = document.getElementById("namingList");
+const themeBtn         = document.getElementById("themeBtn");
 const refImageUploadEl = document.getElementById("refImageUpload");
 const refImageClearEl  = document.getElementById("refImageClear");
 const refImageListEl   = document.getElementById("refImageList");
@@ -42,8 +46,6 @@ const folderNameEl     = document.getElementById("folderName");
 const destOpts         = Array.from(document.querySelectorAll(".seg__opt[data-dest]"));
 const destLocalEl      = document.getElementById("destLocal");
 const destDriveEl      = document.getElementById("destDrive");
-const driveNotSetUpEl  = document.getElementById("driveNotSetUp");
-const driveBodyEl      = document.getElementById("driveBody");
 const driveLinkWrap    = document.getElementById("driveLinkWrap");
 const driveLinkInput   = document.getElementById("driveLinkInput");
 const driveLinkMsg     = document.getElementById("driveLinkMsg");
@@ -91,7 +93,8 @@ function setBusy(busy) {
   isRunning = busy;
   appEl.classList.toggle("is-running", busy);
   promptsEl.disabled      = busy;
-  namingModeEl.disabled   = busy;
+  namingBtn.disabled      = busy;
+  if (busy) closeNamingList();
   txtUploadEl.disabled    = busy;
   chooseFolderBtn.disabled = busy;
   destOpts.forEach(b => { b.disabled = busy; });
@@ -158,6 +161,86 @@ async function sendToFlowTab(message) {
 // ─────────────────────────────────────────────
 helpOpen.addEventListener("click", () => helpDialog.showModal());
 helpClose.addEventListener("click", () => helpDialog.close());
+
+// ─────────────────────────────────────────────
+// Theme: system → light → dark (theme.js applies the saved choice before first paint)
+// ─────────────────────────────────────────────
+const THEME_LABEL = { system: "Theme: match system", light: "Theme: light", dark: "Theme: dark" };
+
+function applyTheme(mode) {
+  if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
+  else { delete document.documentElement.dataset.theme; mode = "system"; }
+  themeBtn.dataset.mode = mode;
+  themeBtn.title = THEME_LABEL[mode];
+  themeBtn.setAttribute("aria-label", `${THEME_LABEL[mode]}. Click to change.`);
+  try { localStorage.setItem("nexusTheme", mode); } catch { /* storage blocked */ }
+}
+
+applyTheme(document.documentElement.dataset.theme || "system");
+themeBtn.addEventListener("click", () => {
+  const next = { system: "light", light: "dark", dark: "system" }[themeBtn.dataset.mode] || "system";
+  applyTheme(next);
+});
+
+// ─────────────────────────────────────────────
+// File names dropdown (custom listbox; the hidden #namingMode input holds the value)
+// ─────────────────────────────────────────────
+const namingOptions = Array.from(namingListEl.querySelectorAll(".dd__opt"));
+let namingActive = 0;
+
+function setNamingMode(value, { notify = false } = {}) {
+  const opt = namingOptions.find(o => o.dataset.value === value) || namingOptions[0];
+  namingModeEl.value = opt.dataset.value;
+  namingOptions.forEach(o => o.setAttribute("aria-selected", String(o === opt)));
+  namingValueEl.innerHTML = opt.innerHTML;
+  if (notify) namingModeEl.dispatchEvent(new Event("change"));
+}
+
+function setNamingActive(i) {
+  namingActive = (i + namingOptions.length) % namingOptions.length;
+  namingOptions.forEach((o, k) => o.classList.toggle("is-active", k === namingActive));
+  namingListEl.setAttribute("aria-activedescendant", namingOptions[namingActive].id);
+}
+
+function openNamingList() {
+  if (namingBtn.disabled) return;
+  namingListEl.hidden = false;
+  namingBtn.setAttribute("aria-expanded", "true");
+  setNamingActive(Math.max(0, namingOptions.findIndex(o => o.dataset.value === namingModeEl.value)));
+  namingListEl.focus();
+}
+
+function closeNamingList({ refocus = false } = {}) {
+  if (namingListEl.hidden) return;
+  namingListEl.hidden = true;
+  namingBtn.setAttribute("aria-expanded", "false");
+  if (refocus) namingBtn.focus();
+}
+
+namingBtn.addEventListener("click", () => (namingListEl.hidden ? openNamingList() : closeNamingList()));
+namingBtn.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); openNamingList(); }
+});
+namingOptions.forEach((o, i) => {
+  o.addEventListener("mousemove", () => setNamingActive(i));
+  o.addEventListener("click", () => { setNamingMode(o.dataset.value, { notify: true }); closeNamingList({ refocus: true }); });
+});
+namingListEl.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown") { e.preventDefault(); setNamingActive(namingActive + 1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); setNamingActive(namingActive - 1); }
+  else if (e.key === "Home") { e.preventDefault(); setNamingActive(0); }
+  else if (e.key === "End") { e.preventDefault(); setNamingActive(namingOptions.length - 1); }
+  else if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    setNamingMode(namingOptions[namingActive].dataset.value, { notify: true });
+    closeNamingList({ refocus: true });
+  } else if (e.key === "Escape") { e.preventDefault(); closeNamingList({ refocus: true }); }
+  else if (e.key === "Tab") closeNamingList();
+});
+document.addEventListener("mousedown", (e) => {
+  if (!namingListEl.hidden && !e.target.closest("#namingDd")) closeNamingList();
+});
+setNamingMode(namingModeEl.value);
 
 // ─────────────────────────────────────────────
 // Prompts + queue
@@ -522,13 +605,13 @@ async function showAccount() {
   }
 }
 
+const DRIVE_EMPTY_HINT = "Paste the link of a folder you can edit. Google asks you to allow access the first time.";
+const DRIVE_NOT_SET_UP =
+  "Uploads aren't switched on in this copy yet: add your Google Client ID to manifest.json (see docs/google-drive-setup.md), then reload the extension.";
+
 function initDrive() {
-  const configured = Drive.isConfigured();
-  driveNotSetUpEl.hidden = configured;
-  driveBodyEl.hidden = !configured;
-  if (!configured) return;
   if (driveLinkInput.value.trim()) checkDriveLink({ interactive: false });
-  else setLinkState("", "Paste the link of a folder you can edit. Google asks you to allow access the first time.");
+  else setLinkState("", Drive.isConfigured() ? DRIVE_EMPTY_HINT : `${DRIVE_EMPTY_HINT} ${DRIVE_NOT_SET_UP}`);
 }
 
 /**
@@ -542,9 +625,10 @@ async function checkDriveLink({ interactive }) {
   driveFolder = null;
   chrome.storage.local.set({ nexusDriveLink: text, nexusDriveFolder: null });
 
-  if (!text) { setLinkState("", "Paste the link of a folder you can edit. Google asks you to allow access the first time."); return; }
+  if (!text) { initDrive(); return; }
   const ref = Drive.parseFolderRef(text);
   if (!ref) { setLinkState("bad", "That isn't a Google Drive folder link. Copy it from the folder's Share menu or address bar."); return; }
+  if (!Drive.isConfigured()) { setLinkState("bad", `The link looks right. ${DRIVE_NOT_SET_UP}`); return; }
 
   setLinkState("checking", "Checking access…");
   try {
@@ -903,7 +987,7 @@ async function retryPrompt(index) {
 // Persist / restore (settings and references only; prompts start fresh)
 // ─────────────────────────────────────────────
 chrome.storage.local.get(["nexusNaming", "nexusSaveDest", "nexusDriveLink", "nexusRefImages", "nexusRefImage", "nexusRefImageName"], (r) => {
-  if (r.nexusNaming) namingModeEl.value = r.nexusNaming;
+  if (r.nexusNaming) setNamingMode(r.nexusNaming);
   if (r.nexusDriveLink) driveLinkInput.value = r.nexusDriveLink;
   setDest(r.nexusSaveDest || "local", { persist: false });
   if (Array.isArray(r.nexusRefImages) && r.nexusRefImages.length) {

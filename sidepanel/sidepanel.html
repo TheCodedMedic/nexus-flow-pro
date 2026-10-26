@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nexus Flow Pro</title>
     <link rel="stylesheet" href="sidepanel.css" />
+    <script src="theme.js"></script>
   </head>
   <body>
     <div class="app" id="app">
@@ -12,9 +13,16 @@
         <img class="top__logo" src="../icons/icon-48.png" width="28" height="28" alt="" decoding="async" />
         <h1 class="top__name">Nexus Flow Pro</h1>
         <span class="top__version" id="versionTag">v1.0.0</span>
-        <button type="button" class="icon-btn" id="helpOpen" aria-haspopup="dialog" aria-controls="helpDialog" title="How to use">
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9.5 9.2a2.6 2.6 0 0 1 5 .9c0 1.7-2.5 2.2-2.5 3.9M12 17.2v.1"/><circle cx="12" cy="12" r="9.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
-        </button>
+        <div class="top__actions">
+          <button type="button" class="icon-btn theme-btn" id="themeBtn" data-mode="system" title="Theme: match system">
+            <svg class="i-system" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="currentColor" d="M12 3.8a8.2 8.2 0 0 1 0 16.4z"/></svg>
+            <svg class="i-light" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/></svg>
+            <svg class="i-dark" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+          </button>
+          <button type="button" class="icon-btn" id="helpOpen" aria-haspopup="dialog" aria-controls="helpDialog" title="How to use">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9.5 9.2a2.6 2.6 0 0 1 5 .9c0 1.7-2.5 2.2-2.5 3.9M12 17.2v.1"/><circle cx="12" cy="12" r="9.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+          </button>
+        </div>
       </header>
 
       <!-- Connection + agent mode, one row -->
@@ -83,13 +91,25 @@
       <!-- Output -->
       <section class="card card--rows">
         <div class="row">
-          <label for="namingMode" class="label">File names</label>
-          <div class="select">
-            <select id="namingMode">
-              <option value="serial">Serial · 000-name.jpg</option>
-              <option value="timestamp">Timestamp · 00-15-name.jpg</option>
-              <option value="none">Prompt text only</option>
-            </select>
+          <span class="label" id="namingLabel">File names</span>
+          <div class="dd" id="namingDd">
+            <button type="button" class="dd__btn" id="namingBtn" aria-haspopup="listbox" aria-expanded="false"
+                    aria-controls="namingList" aria-labelledby="namingLabel namingBtn">
+              <span class="dd__value" id="namingValue"></span>
+              <span class="dd__chev" aria-hidden="true"></span>
+            </button>
+            <ul class="dd__list" id="namingList" role="listbox" aria-labelledby="namingLabel" tabindex="-1" hidden>
+              <li class="dd__opt" role="option" id="naming-serial" data-value="serial">
+                <span class="dd__opt-title">Serial</span><span class="dd__opt-ex">000-name.jpg</span>
+              </li>
+              <li class="dd__opt" role="option" id="naming-timestamp" data-value="timestamp">
+                <span class="dd__opt-title">Timestamp</span><span class="dd__opt-ex">00-15-name.jpg</span>
+              </li>
+              <li class="dd__opt" role="option" id="naming-none" data-value="none">
+                <span class="dd__opt-title">Prompt text</span><span class="dd__opt-ex">name.jpg</span>
+              </li>
+            </ul>
+            <input type="hidden" id="namingMode" value="serial" />
           </div>
         </div>
         <div class="row row--stack">
@@ -110,8 +130,6 @@
           </div>
 
           <div id="destDrive" class="drive" hidden>
-            <p class="hint" id="driveNotSetUp" hidden>Google Drive isn't set up in this copy of the extension yet. See <code>docs/google-drive-setup.md</code>.</p>
-
             <div class="drive__body" id="driveBody">
               <div class="dlink" id="driveLinkWrap">
                 <input type="url" id="driveLinkInput" class="dlink__input" placeholder="Paste a Google Drive folder link"

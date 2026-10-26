@@ -28,7 +28,8 @@ extended into **Nexus Flow Pro**.
    Access API, or `Downloads/nexus-flow`) or **Google Drive** (paste a folder link; it is
    checked for write access and marked with a ✓). Drive needs a one-time Google Cloud setup:
    see [`docs/google-drive-setup.md`](docs/google-drive-setup.md).
-4. **Status row** — shows whether the content script on the Flow project tab is actually
+4. **Theme** — the header button cycles System → Light → Dark; the choice is remembered.
+5. **Status row** — shows whether the content script on the Flow project tab is actually
    responding, and whether Flow's Agent mode is on (which blocks starting a run).
 
 ---
@@ -46,6 +47,7 @@ nexus-flow-extension/
 │   ├── sidepanel.html         # Side panel UI
 │   ├── sidepanel.css          # Warm-neutral theme, light + dark
 │   ├── fonts/                 # Onest + Geist Mono (latin, OFL), bundled
+│   ├── theme.js               # Applies the saved light/dark choice before first paint
 │   ├── drive.js               # Google Drive: sign-in, folder-link check, upload with backoff
 │   └── sidepanel.js           # UI logic, queue driver, downloads, settings persistence
 └── icons/                     # logo.svg + 16 / 32 / 48 / 128 px PNGs rendered from it

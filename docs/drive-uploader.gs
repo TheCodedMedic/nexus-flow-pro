@@ -1,9 +1,10 @@
 /**
  * Nexus Flow Pro — Google Drive uploader (Google Apps Script web app).
  *
- * Runs under YOUR Google account, so the extension can save images into a Drive folder
- * without any Google Cloud setup. Everyone who uses your uploader link + key uploads as
- * you: the files are owned by you and count toward your Drive storage.
+ * Runs under YOUR Google account and uploads AS you into any Drive folder link the
+ * extension sends: your own folders or other people's, as long as the folder lets you add
+ * files (e.g. shared as "Anyone with the link: Editor"). No Google Cloud setup. Everyone
+ * using your uploader link + key uploads as you.
  *
  * Setup (about 3 minutes) is in docs/google-drive-setup.md.
  */
@@ -50,7 +51,7 @@ function openFolder(req) {
       ? DriveApp.getFolderByIdAndResourceKey(req.folderId, req.resourceKey)
       : DriveApp.getFolderById(req.folderId);
   } catch (err) {
-    throw new Error("No folder found at that link, or the uploader's account can't open it.");
+    throw new Error("Can't open that folder. Check the link, and that it's shared as “Anyone with the link: Editor” (or with the uploading account).");
   }
 }
 

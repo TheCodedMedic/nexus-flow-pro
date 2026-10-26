@@ -582,7 +582,7 @@ let driveConn = "off";   // "off" | "connecting" | "on"
 function setDriveConn(state, sub) {
   driveConn = state;
   driveConnEl.className = `dconn is-${state}`;
-  driveConnTitle.textContent = state === "on" ? "Connected to Google Drive" : "Google Drive";
+  driveConnTitle.textContent = state === "on" ? "Ready to upload to Drive" : "Google Drive uploads";
   driveConnSub.textContent = sub || { off: "Not connected", connecting: "Connecting…", on: "Connected" }[state];
   driveChangeBtn.hidden = driveDisconnect.hidden = state !== "on";
   driveConnectBtn.disabled = state === "connecting" || isRunning;
@@ -606,7 +606,8 @@ function showDriveSetup(open, { canCancel = false } = {}) {
 async function refreshDriveConn() {
   await Drive.ready;
   if (Drive.isConnected()) {
-    setDriveConn("on", `Uploads go to ${Drive.getUploader().email}'s Drive`);
+    // The email is only who the files are uploaded AS; they go into whatever folder link is pasted.
+    setDriveConn("on", `Uploading as ${Drive.getUploader().email}`);
     showDriveSetup(false);
     return true;
   }
@@ -672,7 +673,7 @@ function setLinkState(state, message) {
   driveLinkMsg.textContent = message || "";
 }
 
-const DRIVE_EMPTY_HINT = "Paste the link of a folder you can edit.";
+const DRIVE_EMPTY_HINT = "Paste any Google Drive folder link — yours or someone else's. It must allow adding files (e.g. “Anyone with the link: Editor”).";
 
 async function initDrive() {
   const connected = await refreshDriveConn();
@@ -698,7 +699,7 @@ async function checkDriveLink() {
     const folder = await Drive.getFolder(ref);
     if (seq !== checkSeq) return;
     if (!folder.canAdd) {
-      setLinkState("bad", `You can view “${folder.name}” but can't add files. Ask the owner for Editor access.`);
+      setLinkState("bad", `You can view “${folder.name}” but can't add files to it. Ask the owner to set it to “Anyone with the link: Editor” or share it with you as Editor.`);
       return;
     }
     driveFolder = folder;

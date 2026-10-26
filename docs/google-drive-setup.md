@@ -1,14 +1,18 @@
 # Google Drive setup (no Google Cloud)
 
-Images go to Drive through a small **uploader**: a Google Apps Script that runs under
-**one person's Google account** (yours). You set it up once in about 3 minutes; then you
-and anyone you give the link + key to can upload. Nobody touches Google Cloud.
+Images upload into **any Google Drive folder link you paste**: yours, a friend's, or a
+public folder someone else owns. Google needs to know *who* is adding the files, so the
+upload runs through a small **uploader** (a Google Apps Script) under a Google account.
+That account is just the "this is me" identity; it is not where files go. Nobody touches
+Google Cloud.
 
 Good to know:
-- Every uploaded file is **owned by the uploader's account** and counts toward its Drive
-  storage, including files your friend uploads.
-- The uploader's account must be able to add files to the folder: your own folder, or a
-  folder shared as **Anyone with the link → Editor** (or shared with you as Editor).
+- The folder must allow that account to add files: shared as **Anyone with the link →
+  Editor**, or shared with that account as Editor. View-only links can't be uploaded to.
+- Uploaded files are owned by the uploading account. Inside someone else's normal Drive
+  folder they count toward the uploader's storage; inside a shared drive they don't.
+- You and your friend can share one uploader (you both upload as that account), or each
+  make your own in 3 minutes so each of you uploads as yourself.
 - Anyone with the uploader link **and** the key can upload into folders you can edit.
   Keep the key private.
 
@@ -31,9 +35,9 @@ Good to know:
 
 1. Open the side panel → **Save to → Google Drive**.
 2. Paste the **Uploader link** (the Web app URL) and the **Key**, click **Connect**.
-   The row turns green: **Connected to Google Drive · Uploads go to you@gmail.com's Drive**.
-3. Paste the folder link (from the folder's **Share → Copy link**). A green ✓ and the
-   folder name mean it's ready.
+   The row turns green: **Ready to upload to Drive · Uploading as you@gmail.com**.
+3. Paste the link of the folder to upload into (anyone's, from **Share → Copy link**).
+   A green ✓ and the folder name mean it's ready.
 
 Each image uploads as soon as it's generated. **Retry** replaces the file with the same
 name instead of adding a copy.
@@ -52,9 +56,8 @@ have to paste into the extension again.)
 - **"The uploader link didn't answer properly"**: the link isn't the `/exec` Web app URL,
   or "Who has access" isn't **Anyone**. Fix it under Manage deployments.
 - **"Wrong key"**: the key in the extension doesn't match `KEY` in the script.
-- **"No folder found at that link, or the uploader's account can't open it"**: the folder
-  isn't shared with the uploader's account. Share it with Editor access, or use "Anyone
-  with the link → Editor".
+- **"Can't open that folder"**: the link is wrong, or the folder isn't shared with the
+  uploading account. It needs "Anyone with the link → Editor", or Editor access for that account.
 - **"can't add files"**: the folder is shared as Viewer. Ask the owner for Editor.
 
 Apps Script has daily limits on a free Google account, but they're far above a few

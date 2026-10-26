@@ -57,7 +57,6 @@ const driveDisconnect  = document.getElementById("driveDisconnect");
 const driveChangeBtn   = document.getElementById("driveChange");
 const driveSetupEl     = document.getElementById("driveSetup");
 const driveUrlInput    = document.getElementById("driveUrlInput");
-const driveKeyInput    = document.getElementById("driveKeyInput");
 const driveSetupCancel = document.getElementById("driveSetupCancel");
 const driveSetupError  = document.getElementById("driveSetupError");
 
@@ -599,7 +598,6 @@ function showDriveSetup(open, { canCancel = false } = {}) {
   if (open) {
     const u = Drive.getUploader();
     driveUrlInput.value = u.url || "";
-    driveKeyInput.value = u.key || "";
   }
 }
 
@@ -620,7 +618,7 @@ driveConnectBtn.addEventListener("click", async () => {
   driveSetupError.hidden = true;
   setDriveConn("connecting");
   try {
-    await Drive.connect(driveUrlInput.value, driveKeyInput.value);
+    await Drive.connect(driveUrlInput.value);
   } catch (e) {
     setDriveConn("off");
     driveSetupError.textContent = e.message;
@@ -632,12 +630,10 @@ driveConnectBtn.addEventListener("click", async () => {
   if (driveLinkInput.value.trim()) checkDriveLink();
   else { setLinkState("", DRIVE_EMPTY_HINT); driveLinkInput.focus(); }
 });
-[driveUrlInput, driveKeyInput].forEach(el => el.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") driveConnectBtn.click();
-}));
+driveUrlInput.addEventListener("keydown", (e) => { if (e.key === "Enter") driveConnectBtn.click(); });
 
 driveChangeBtn.addEventListener("click", () => {
-  setDriveConn("off", "Enter a new uploader link or key");
+  setDriveConn("off", "Paste a new uploader link");
   showDriveSetup(true, { canCancel: true });
   driveUrlInput.focus();
 });
@@ -709,7 +705,7 @@ async function checkDriveLink() {
   } catch (e) {
     if (seq !== checkSeq) return;
     if (e instanceof Drive.NeedsAuthError) {
-      setDriveConn("off", "The uploader rejected the key. Check it and Connect again.");
+      setDriveConn("off", "The uploader script's password isn't \"Nexus\". Fix the script, then Connect again.");
       showDriveSetup(true);
     } else {
       setLinkState("bad", e.message);
@@ -914,8 +910,8 @@ async function startQueue(startIndex = 0) {
           if (saved.needsAuth) {
             // Every later upload would fail the same way; stop so Continue can resume after reconnecting.
             isRunning = false;
-            setStatus("The Drive uploader rejected the key. Fix it under Save to, then Continue.");
-            setDriveConn("off", "The uploader rejected the key. Check it and Connect again.");
+            setStatus('The Drive uploader script\'s password isn\'t "Nexus". Fix the script, then Continue.');
+            setDriveConn("off", "The uploader script's password isn't \"Nexus\". Fix the script, then Connect again.");
             showDriveSetup(true);
           }
         }
@@ -1020,7 +1016,7 @@ async function retryPrompt(index) {
       } else {
         updateStatus(index, "failed");
         setStatus(`Prompt ${index + 1} regenerated but wasn't saved: ${saved.error}`);
-        if (saved.needsAuth) { setDriveConn("off", "The uploader rejected the key. Check it and Connect again."); showDriveSetup(true); }
+        if (saved.needsAuth) { setDriveConn("off", "The uploader script's password isn't \"Nexus\". Fix the script, then Connect again."); showDriveSetup(true); }
       }
     } else if (c?.stopped || !isRunning) {
       updateStatus(index, prevStatus);

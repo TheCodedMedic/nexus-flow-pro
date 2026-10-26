@@ -9,9 +9,9 @@
  * Setup (about 3 minutes) is in docs/google-drive-setup.md.
  */
 
-// Change this to your own password. You and your friend paste the same one into the
-// extension. Anyone with the uploader link AND this key can upload into folders you can edit.
-const KEY = "change-me";
+// Leave this as "Nexus": the extension always sends it, so nobody has to type a key.
+// Keep the uploader link private; anyone with it can upload as you.
+const KEY = "Nexus";
 
 function doPost(e) {
   try {

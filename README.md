@@ -16,8 +16,8 @@ extended into **Nexus Flow Pro**.
 
 ## What it does
 
-1. **Prompt queue** — paste prompts (one per line) or import a `.txt`. Up to **5** generate at
-   once, submitted **3 s** apart (fixed; not user-configurable). Each row shows its status and
+1. **Prompt queue** — paste prompts (one per line) or import a `.txt`. Up to **8** generate at
+   once, submitted **1 s** apart (fixed; not user-configurable). Each row shows its status and
    has a **Retry** that regenerates that one image and overwrites its saved file.
 2. **Character references** — up to 8 images, attached to **every** prompt so characters stay
    consistent. Every image added is kept in a collapsible **Library**; click one to swap it in
@@ -176,7 +176,7 @@ if a step is missed.
 
 ## Current state / known limitations
 
-- ✅ Bulk queue (5 in flight, 3 s apart), per-prompt status and Retry, Continue/Stop.
+- ✅ Bulk queue (8 in flight, 1 s apart), per-prompt status and Retry, Continue/Stop.
 - ✅ Reference image: upload-once + re-select from project (search-box method defeats virtualization).
 - ✅ Auto-save with serial/timestamp/prompt-text naming; folder picker.
 - ✅ Reference image persists across browser restarts.

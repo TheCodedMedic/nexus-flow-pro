@@ -1,7 +1,6 @@
-// Fixed run settings. These used to be user inputs; 5 in flight with 3s between
-// submissions is the combination that keeps Flow stable.
-const PARALLEL        = 5;
-const SUBMIT_DELAY_MS = 3000;
+// Fixed run settings: up to 8 generations in flight, with 1s between submissions.
+const PARALLEL        = 8;
+const SUBMIT_DELAY_MS = 1000;
 const COLLECT_TIMEOUT_MS = 180000;
 const CHAR_DELAY_MS   = 30;
 

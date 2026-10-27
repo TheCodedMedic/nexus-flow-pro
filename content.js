@@ -1376,7 +1376,10 @@
     return refImagesBase64
       .filter(Boolean)
       .map((b64, idx) => {
-        const name = `reference${idx + 1}.png`;
+        // The panel sends each image's stable project name ("ref-1a2b3c4d.png"); fall back
+        // to positional names for older panels.
+        const sent = Array.isArray(payload.refNames) ? payload.refNames[idx] : null;
+        const name = typeof sent === "string" && /^[\w.-]{1,64}\.png$/.test(sent) ? sent : `reference${idx + 1}.png`;
         const file = base64ToFile(b64, name);
         log(`Prepared reference image ${name} (size: ${file.size} bytes)`);
         return { file, name };

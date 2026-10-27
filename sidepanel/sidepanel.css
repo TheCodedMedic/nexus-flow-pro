@@ -299,6 +299,59 @@ textarea:focus { border-color: var(--line-2); background: var(--surface); }
 }
 .ref:hover .ref__remove, .ref__remove:focus-visible { opacity: 1; }
 
+/* ── Reference library ── */
+.lib { border-top: 1px solid var(--line); margin: 2px -12px -12px; padding: 0 12px; }
+.lib__summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 0;
+  list-style: none; cursor: pointer;
+}
+.lib__summary::-webkit-details-marker { display: none; }
+.lib__summary:focus-visible { outline: 2px solid var(--run); outline-offset: 2px; border-radius: 6px; }
+.lib__chev {
+  width: 6px; height: 6px; margin: 0 2px;
+  border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg); transition: transform .15s;
+}
+.lib[open] .lib__chev { transform: rotate(45deg); }
+.lib__hint { margin-left: auto; font-size: 11px; color: var(--faint); }
+.lib:not([open]) .lib__hint { display: none; }
+.lib__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 8px; padding-bottom: 12px; }
+.lib__grid:empty { display: none; }
+.lib > .hint { padding-bottom: 12px; }
+
+.lib-item { position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.lib-item__pick {
+  position: relative; display: block; padding: 0;
+  aspect-ratio: 1; width: 100%;
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  background: var(--sunken); overflow: hidden;
+  cursor: pointer;
+}
+.lib-item__pick img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lib-item__pick:hover { border-color: var(--line-2); }
+.lib-item__pick:focus-visible { outline: 2px solid var(--run); outline-offset: 2px; }
+.lib-item.is-active .lib-item__pick { border: 2px solid var(--ok); }
+.lib-item__badge {
+  position: absolute; left: 4px; top: 4px;
+  width: 18px; height: 18px; border-radius: 50%;
+  display: none; place-items: center;
+  background: var(--ok); color: var(--on-accent);
+  font-size: 11px; font-weight: 700; line-height: 1;
+}
+.lib-item.is-active .lib-item__badge { display: grid; }
+.lib-item__delete {
+  position: absolute; top: 4px; right: 4px;
+  width: 22px; height: 22px;
+  display: grid; place-items: center;
+  border: none; border-radius: 999px;
+  background: rgba(15, 14, 13, .72); color: #fff;
+  cursor: pointer; opacity: 0;
+}
+.lib-item:hover .lib-item__delete, .lib-item__delete:focus-visible { opacity: 1; }
+.lib-item__delete:hover { background: var(--bad); }
+.lib-item__name { font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ── Output settings ── */
 .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; min-height: 52px; }
 /* Custom dropdown (File names) */

@@ -37,7 +37,7 @@
         <h2 id="helpDialogTitle">How it works</h2>
         <ol class="help__steps">
           <li>Open a Google Flow project tab.</li>
-          <li>Optional: add character references, click <b>Upload to project</b>, then <b>Hard refresh</b>. Every prompt will attach them.</li>
+          <li>Optional: add character references, click <b>Upload to project</b>, then <b>Hard refresh</b>. Every prompt attaches them. Everything you add is kept in the <b>Library</b>: click an image there to swap it in or out. Only images new to a project need uploading.</li>
           <li>Paste your prompts, one per line. Start a line with <code>[00.15]</code> to name the file by timestamp.</li>
           <li>Click <b>Start</b>. Up to 5 prompts generate at once, 3 seconds apart, and each image is saved when it finishes, to your computer or a Google Drive folder.</li>
         </ol>
@@ -86,6 +86,16 @@
           <button type="button" id="loadRefsBtn" class="btn btn--secondary btn--sm" disabled>Upload to project</button>
           <button type="button" id="hardRefreshBtn" class="btn btn--ghost btn--sm" title="Hard-refresh the Flow tab">Hard refresh</button>
         </div>
+        <details class="lib" id="refLibrary">
+          <summary class="lib__summary">
+            <span class="lib__chev" aria-hidden="true"></span>
+            <span class="label">Library</span>
+            <span class="meta" id="refLibraryCount">0</span>
+            <span class="lib__hint">Click an image to use it</span>
+          </summary>
+          <div class="lib__grid" id="refLibraryGrid"></div>
+          <p class="hint" id="refLibraryEmpty">Every reference you add is kept here, so you can swap characters without uploading them again.</p>
+        </details>
       </section>
 
       <!-- Output -->

@@ -20,7 +20,9 @@ extended into **Nexus Flow Pro**.
    once, submitted **3 s** apart (fixed; not user-configurable). Each row shows its status and
    has a **Retry** that regenerates that one image and overwrites its saved file.
 2. **Character references** — up to 8 images, attached to **every** prompt so characters stay
-   consistent. **Upload to project** pastes them into the Flow project once; **Hard refresh**
+   consistent. Every image added is kept in a collapsible **Library**; click one to swap it in
+   or out. Each image has a stable project name (`ref-<8 hex>.png`, from its content), so an
+   image uploaded to a project once is found again whenever it's swapped back in. **Upload to project** pastes them into the Flow project once; **Hard refresh**
    reloads the tab so they become selectable. References persist across restarts.
 3. **Auto-save** — each finished image is saved as it completes. File names: `Serial`
    (`000-name.jpg`), `Timestamp` (`00-15-name.jpg`, from a `[mm.ss]` tag at the start of the

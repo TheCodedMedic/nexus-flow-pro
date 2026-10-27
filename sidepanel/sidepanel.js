@@ -5,9 +5,14 @@ const SUBMIT_DELAY_MS = 3000;
 const COLLECT_TIMEOUT_MS = 180000;
 const CHAR_DELAY_MS   = 30;
 
-// Reference images — all of them are attached to every prompt.
+// Reference images. Every image ever added lives in the library; the ones in use (up to
+// MAX_REF_IMAGES) are attached to every prompt. Each image has a stable id derived from its
+// content, and is named "<id>.png" in the Flow project, so swapping references never makes
+// two different images share a name.
 const MAX_REF_IMAGES = 8;
-let refImages = []; // [{ base64, name }]
+let library = [];      // [{ id, base64, name }]  newest first
+let activeIds = [];    // ids from `library`, in attach order
+let refImages = [];    // active library entries, kept in sync by syncActive()
 
 const promptsEl        = document.getElementById("prompts");
 const promptCountEl    = document.getElementById("promptCount");
@@ -78,7 +83,7 @@ const MSG_NOT_READY    = "Flow tab isn't responding. Hard-refresh it, then try a
 // ─────────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-function setStatus(text) { statusEl.textContent = text; }
+function setStatus(text) { statusEl.textContent = friendlyRefNames(text); }
 
 function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }
 
@@ -357,35 +362,77 @@ txtUploadEl.addEventListener("change", (e) => {
 });
 
 // ─────────────────────────────────────────────
-// Reference images
+// Reference images + library
 // ─────────────────────────────────────────────
-function persistRefImages() {
-  chrome.storage.local.set({ nexusRefImages: refImages });
+const libraryEl      = document.getElementById("refLibrary");
+const libraryGridEl  = document.getElementById("refLibraryGrid");
+const libraryCountEl = document.getElementById("refLibraryCount");
+const libraryEmptyEl = document.getElementById("refLibraryEmpty");
+
+async function refIdFor(base64) {
+  const bytes = new TextEncoder().encode(base64);
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return "ref-" + Array.from(hash.slice(0, 4), b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Name the image has in the Flow project; the content script searches the picker for it.
+function projectNameOf(ref) { return `${ref.id}.png`; }
+
+function syncActive() {
+  activeIds = activeIds.filter(id => library.some(r => r.id === id)).slice(0, MAX_REF_IMAGES);
+  refImages = activeIds.map(id => library.find(r => r.id === id));
+}
+
+function persistRefs() {
+  chrome.storage.local.set({ nexusLibrary: library, nexusActiveRefs: activeIds });
+}
+
+function refreshRefs() {
+  syncActive();
+  persistRefs();
+  renderRefImages();
+  renderLibrary();
+}
+
+function setActive(id, on) {
+  if (on) {
+    if (activeIds.includes(id)) return true;
+    if (activeIds.length >= MAX_REF_IMAGES) {
+      setStatus(`You can use up to ${MAX_REF_IMAGES} references at once. Remove one first.`);
+      return false;
+    }
+    activeIds.push(id);
+  } else {
+    activeIds = activeIds.filter(x => x !== id);
+  }
+  refreshRefs();
+  return true;
+}
+
+function thumb(ref) {
+  const img = document.createElement("img");
+  img.src = ref.base64;
+  img.alt = ref.name || "Reference";
+  img.decoding = "async";
+  return img;
 }
 
 function renderRefImages() {
   refImageListEl.querySelectorAll(".ref").forEach(n => n.remove());
-  refImages.forEach((ref, idx) => {
+  refImages.forEach((ref) => {
     const item = document.createElement("div");
     item.className = "ref";
-    item.title = ref.name || `Reference ${idx + 1}`;
-
-    const img = document.createElement("img");
-    img.src = ref.base64;
-    img.alt = ref.name || `Reference ${idx + 1}`;
+    item.title = ref.name || "Reference";
 
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "ref__remove";
-    remove.setAttribute("aria-label", `Remove ${img.alt}`);
+    remove.setAttribute("aria-label", `Stop using ${ref.name || "this reference"} (it stays in the library)`);
+    remove.title = "Remove (stays in library)";
     remove.textContent = "✕";
-    remove.addEventListener("click", () => {
-      refImages.splice(idx, 1);
-      persistRefImages();
-      renderRefImages();
-    });
+    remove.addEventListener("click", () => setActive(ref.id, false));
 
-    item.append(img, remove);
+    item.append(thumb(ref), remove);
     refImageListEl.insertBefore(item, refImageLabelEl);
   });
 
@@ -394,34 +441,95 @@ function renderRefImages() {
   loadRefsBtn.disabled = refImages.length === 0 || isRunning;
 }
 
-refImageUploadEl.addEventListener("change", (e) => {
+function renderLibrary() {
+  libraryGridEl.textContent = "";
+  libraryCountEl.textContent = String(library.length);
+  libraryEmptyEl.hidden = library.length > 0;
+
+  for (const ref of library) {
+    const inUse = activeIds.includes(ref.id);
+    const tile = document.createElement("div");
+    tile.className = "lib-item" + (inUse ? " is-active" : "");
+
+    const pick = document.createElement("button");
+    pick.type = "button";
+    pick.className = "lib-item__pick";
+    pick.setAttribute("aria-pressed", String(inUse));
+    pick.title = `${ref.name || "Reference"}: ${inUse ? "in use, click to remove" : "click to use"}`;
+    pick.append(thumb(ref));
+    const badge = document.createElement("span");
+    badge.className = "lib-item__badge";
+    badge.setAttribute("aria-hidden", "true");
+    badge.textContent = "✓";
+    pick.append(badge);
+    pick.addEventListener("click", () => setActive(ref.id, !inUse));
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "lib-item__delete";
+    del.title = "Delete from library";
+    del.setAttribute("aria-label", `Delete ${ref.name || "this image"} from the library`);
+    del.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>';
+    del.addEventListener("click", () => {
+      library = library.filter(r => r.id !== ref.id);
+      refreshRefs();
+    });
+
+    const name = document.createElement("span");
+    name.className = "lib-item__name";
+    name.textContent = ref.name || "Reference";
+
+    tile.append(pick, del, name);
+    libraryGridEl.appendChild(tile);
+  }
+}
+
+// Remember whether the library is open.
+try { libraryEl.open = localStorage.getItem("nexusLibraryOpen") === "1"; } catch { /* storage blocked */ }
+libraryEl.addEventListener("toggle", () => {
+  try { localStorage.setItem("nexusLibraryOpen", libraryEl.open ? "1" : "0"); } catch { /* storage blocked */ }
+});
+
+// New uploads go into the library and straight into use. The same picture added twice
+// is recognised and reused rather than stored again.
+refImageUploadEl.addEventListener("change", async (e) => {
   const files = Array.from(e.target.files || []);
   refImageUploadEl.value = "";
   if (!files.length) return;
 
-  const remaining = MAX_REF_IMAGES - refImages.length;
-  if (remaining <= 0) { setStatus(`You can add up to ${MAX_REF_IMAGES} references.`); return; }
-
-  const toAdd = files.slice(0, remaining);
-  Promise.all(toAdd.map(file => new Promise((resolve) => {
+  const loaded = await Promise.all(files.map(file => new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = (ev) => resolve({ base64: ev.target.result, name: file.name });
     reader.onerror = () => resolve(null);
     reader.readAsDataURL(file);
-  }))).then((loaded) => {
-    refImages = refImages.concat(loaded.filter(Boolean));
-    persistRefImages();
-    renderRefImages();
-  });
+  })));
 
-  if (files.length > remaining) setStatus(`Added ${remaining}. You can add up to ${MAX_REF_IMAGES} references.`);
+  let skipped = 0;
+  for (const img of loaded.filter(Boolean)) {
+    const id = await refIdFor(img.base64);
+    if (!library.some(r => r.id === id)) library.unshift({ id, ...img });
+    if (!activeIds.includes(id)) {
+      if (activeIds.length < MAX_REF_IMAGES) activeIds.push(id);
+      else skipped++;
+    }
+  }
+  refreshRefs();
+  if (skipped) setStatus(`${plural(skipped, "image")} went to the library only: you can use up to ${MAX_REF_IMAGES} references at once.`);
 });
 
 refImageClearEl.addEventListener("click", () => {
-  refImages = [];
-  chrome.storage.local.remove("nexusRefImages");
-  renderRefImages();
+  activeIds = [];
+  refreshRefs();   // the library keeps everything
 });
+
+// Status and error text from the Flow tab names references by their project name
+// ("ref-1a2b3c4d.png"); show the file name people recognise instead.
+function friendlyRefNames(text) {
+  return String(text).replace(/ref-[0-9a-f]{8}\.png/g, (m) => {
+    const ref = library.find(r => projectNameOf(r) === m);
+    return ref?.name ? `“${ref.name}”` : m;
+  });
+}
 
 loadRefsBtn.addEventListener("click", async () => {
   if (isRunning || !refImages.length) return;
@@ -437,6 +545,7 @@ loadRefsBtn.addEventListener("click", async () => {
     type: "FLOW_LOAD_REFERENCES",
     charDelayMs: CHAR_DELAY_MS,
     refImages: refImages.map(r => r.base64),
+    refNames: refImages.map(projectNameOf),
   });
 
   flowTabId = null;
@@ -862,6 +971,7 @@ async function startQueue(startIndex = 0) {
           prompt: stripTimestamp(lines[curIdx]),
           charDelayMs: CHAR_DELAY_MS,
           refImages: refImages.map(r => r.base64),
+          refNames: refImages.map(projectNameOf),
           jobIndex: curIdx,
         });
 
@@ -1001,6 +1111,7 @@ async function retryPrompt(index) {
       prompt: stripTimestamp(item.text),
       charDelayMs: CHAR_DELAY_MS,
       refImages: refImages.map(r => r.base64),
+      refNames: refImages.map(projectNameOf),
     });
     if (!isRunning) { updateStatus(index, prevStatus); return; }
     if (!sub || sub.error) { setStatus(sub?.error || "Retry couldn't be submitted."); updateStatus(index, "failed"); return; }
@@ -1035,20 +1146,30 @@ async function retryPrompt(index) {
 // ─────────────────────────────────────────────
 // Persist / restore (settings and references only; prompts start fresh)
 // ─────────────────────────────────────────────
-chrome.storage.local.get(["nexusNaming", "nexusSaveDest", "nexusDriveLink", "nexusRefImages", "nexusRefImage", "nexusRefImageName"], (r) => {
+chrome.storage.local.get(["nexusNaming", "nexusSaveDest", "nexusDriveLink", "nexusLibrary", "nexusActiveRefs", "nexusRefImages", "nexusRefImage", "nexusRefImageName"], (r) => {
   if (r.nexusNaming) setNamingMode(r.nexusNaming);
   if (r.nexusDriveLink) driveLinkInput.value = r.nexusDriveLink;
   setDest(r.nexusSaveDest || "local", { persist: false });
-  if (Array.isArray(r.nexusRefImages) && r.nexusRefImages.length) {
-    refImages = r.nexusRefImages.filter(x => x && x.base64);
-  } else if (r.nexusRefImage) {
-    // Migrate the legacy single-reference storage into the array format.
-    refImages = [{ base64: r.nexusRefImage, name: r.nexusRefImageName || "reference.png" }];
-    persistRefImages();
-    chrome.storage.local.remove(["nexusRefImage", "nexusRefImageName"]);
-  }
-  renderRefImages();
+  restoreRefs(r);
 });
+
+async function restoreRefs(r) {
+  if (Array.isArray(r.nexusLibrary)) {
+    library = r.nexusLibrary.filter(x => x && x.id && x.base64);
+    activeIds = Array.isArray(r.nexusActiveRefs) ? r.nexusActiveRefs : [];
+  } else {
+    // Older versions kept only the references in use: they become the library and stay in use.
+    const old = Array.isArray(r.nexusRefImages) ? r.nexusRefImages.filter(x => x && x.base64)
+      : r.nexusRefImage ? [{ base64: r.nexusRefImage, name: r.nexusRefImageName || "reference.png" }] : [];
+    for (const img of old) {
+      const id = await refIdFor(img.base64);
+      if (!library.some(x => x.id === id)) library.push({ id, base64: img.base64, name: img.name || "reference.png" });
+      if (!activeIds.includes(id)) activeIds.push(id);
+    }
+    chrome.storage.local.remove(["nexusRefImages", "nexusRefImage", "nexusRefImageName"]);
+  }
+  refreshRefs();
+}
 
 // Drop keys for settings that no longer exist.
 chrome.storage.local.remove(["flowBatchWaitMin", "flowBatchWaitMax", "nexusParallelCount", "nexusUpscale", "nexusLang"]);

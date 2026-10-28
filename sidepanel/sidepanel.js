@@ -88,6 +88,9 @@ const MSG_NOT_READY    = "Flow tab isn't responding. Hard-refresh it, then try a
 // ─────────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+function log(...args) { console.log("[Nexus Flow]", ...args); }
+function warn(...args) { console.warn("[Nexus Flow]", ...args); }
+
 function setStatus(text) { statusEl.textContent = friendlyRefNames(text); }
 
 function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }

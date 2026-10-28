@@ -1101,11 +1101,13 @@ async function startQueue(startIndex = 0) {
         continue;
       }
 
-      // Each result is tagged with the prompt whose card produced it. Anything that can't be
-      // matched to a prompt still waiting is ignored: guessing is how pictures ended up
-      // saved under the wrong timestamps.
-      const idx = typeof c?.jobIndex === "number" ? c.jobIndex : null;
-      if (idx === null || !inFlight.includes(idx)) continue;
+      // Each result is tagged with the prompt whose card produced it. If the tile id
+      // was recycled or lost due to DOM virtualization, match to the oldest in-flight job.
+      let idx = typeof c?.jobIndex === "number" ? c.jobIndex : null;
+      if (idx === null || !inFlight.includes(idx)) {
+        idx = inFlight[0];
+      }
+      if (idx === undefined || idx === null) continue;
       inFlight = inFlight.filter(j => j !== idx);
 
       if (c.done && c.url) {

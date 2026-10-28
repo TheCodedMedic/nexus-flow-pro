@@ -45,16 +45,43 @@
    */
   const GENERATED_IMG_SELECTOR = [
     'flow-image-tile img.image',
+    'flow-image-tile img',
+    'flow-media-tile img',
+    'flow-tile-container img.image',
+    'flow-tile-container img',
     'img[alt="Tile displaying a user\'s image"]',
     'img[alt="Generated image"]',
   ].join(", ");
 
+  function isGeneratedImage(img) {
+    if (!img || !img.src) return false;
+    // Must not be in a modal dialog, popover, or prompt bar
+    if (img.closest('[role="dialog"], flow-add-menu-popover-content, .cdk-overlay-container')) return false;
+    const bar = promptBarRoot();
+    if (bar && bar !== document && bar.contains(img)) return false;
+
+    // Must not be our reference image or thumbnail
+    const alt = (img.getAttribute("alt") || "").trim();
+    if (/^(ref-[0-9a-f]{8}|reference\d+)(\.png)?$/i.test(alt)) return false;
+    if (img.src.startsWith("data:image/svg") || img.src.includes("avatar")) return false;
+    if (img.matches('.asset-thumbnail-image, .detail-preview-image')) return false;
+
+    // If inside a tile container, it's definitely a generated image
+    if (img.closest('flow-tile-container, flow-image-tile, flow-media-tile, [data-tile-id]')) return true;
+    if (img.matches('img[alt="Tile displaying a user\'s image"], img[alt="Generated image"]')) return true;
+
+    return false;
+  }
+
   function generatedImages(root) {
-    return Array.from((root || document).querySelectorAll(GENERATED_IMG_SELECTOR));
+    const list = Array.from((root || document).querySelectorAll(GENERATED_IMG_SELECTOR));
+    return list.filter(isGeneratedImage);
   }
 
   function firstGeneratedImage(root) {
-    return (root || document).querySelector(GENERATED_IMG_SELECTOR);
+    if (!root) return null;
+    const imgs = Array.from(root.querySelectorAll(GENERATED_IMG_SELECTOR)).filter(isGeneratedImage);
+    return imgs[0] || null;
   }
 
   function isVisible(el) {
@@ -1490,9 +1517,35 @@
       }
     }
 
-    // Images outside every tracked tile used to be credited to whichever prompt had waited
-    // longest, which saved one prompt's picture under another prompt's name. Every job now
-    // has its own tile (or is re-sent), so an unmatched image is simply ignored.
+    // Fallback: Catch any newly generated image that appeared on the page.
+    // If a tile lost its mark or was virtualized/redrawn by Angular, NEVER drop the image!
+    const imgs = generatedImages();
+    for (const img of imgs) {
+      const src = img.src;
+      if (src && !pipelineSeenSrcs.has(src)) {
+        pipelineSeenSrcs.add(src);
+        // Check if it sits inside any known unresolved tile
+        let matchedJobIndex = null;
+        for (const [jobIndex, tileId] of pipelineJobTiles.entries()) {
+          if (pipelineResolvedTiles.has(tileId)) continue;
+          const tile = tileElementById(tileId);
+          if (tile && tile.contains(img)) {
+            matchedJobIndex = jobIndex;
+            pipelineResolvedTiles.add(tileId);
+            break;
+          }
+        }
+        pipelineFinishedQueue.push({ type: "image", src, jobIndex: matchedJobIndex });
+        log(`Pipeline: captured newly generated image (jobIndex: ${matchedJobIndex !== null ? matchedJobIndex : "unmatched"})`);
+      }
+    }
+    const fc = countFailCards();
+    if (fc > pipelineLastFailCount) {
+      for (let k = 0; k < fc - pipelineLastFailCount; k++) {
+        pipelineFinishedQueue.push({ type: "fail", jobIndex: null });
+      }
+      pipelineLastFailCount = fc;
+    }
   }
 
   function stopPipelineScanning() {
@@ -1579,26 +1632,37 @@
     // exactly the next one.
     absorbUnexpectedTiles();
     const before = pipelineSlots.length;
-    const newCardShown = (ms) => waitFor(() => runTiles().length > before, ms, 100);
 
     await send();
-    let shown = await newCardShown(6000);
 
-    // No card and the prompt is still in the box: Flow didn't take it (e.g. busy). Send again
-    // (twice at most). If the box was cleared, Flow took it, so never send it twice.
-    for (let attempt = 0; !shown && attempt < 2 && !pipelineStopped && promptStillInBox(); attempt++) {
-      warn(`Pipeline: no new card and the prompt is still in the box; sending again (${attempt + 1}/2).`);
-      await sleep(1500);
-      await send();
-      shown = await newCardShown(6000);
+    // Fast check if Flow accepted the prompt: text cleared or new card appeared
+    let accepted = false;
+    for (let i = 0; i < 15; i++) {
+      if (pipelineStopped) return { stopped: true };
+      if (!promptStillInBox() || runTiles().length > before) {
+        accepted = true;
+        break;
+      }
+      await sleep(100);
     }
-    // Box cleared but no card yet: give a slow card a little longer.
-    if (!shown && !pipelineStopped && !promptStillInBox()) shown = await newCardShown(4000);
-    if (pipelineStopped) return { stopped: true };
 
-    if (!shown) {
-      // No card means no generation, even if Flow cleared the box (it does that when it
-      // silently drops a prompt while busy). Report it so the panel sends it again.
+    // If still in the box after 1.5s, try sending once more
+    if (!accepted && promptStillInBox() && !pipelineStopped) {
+      warn("Pipeline: prompt still in editor; re-sending once.");
+      await sleep(400);
+      await send();
+      for (let i = 0; i < 15; i++) {
+        if (pipelineStopped) return { stopped: true };
+        if (!promptStillInBox() || runTiles().length > before) {
+          accepted = true;
+          break;
+        }
+        await sleep(100);
+      }
+    }
+
+    if (!accepted && promptStillInBox()) {
+      // Prompt still in box: Flow didn't start generation. Clear and report.
       const ed = liveEditor(input);
       if (ed && promptStillInBox()) { await focusEditorLikeUser(ed); await clearEditorContent(ed); }
       return { error: "Flow didn't start a generation for this prompt (it may be busy).", notStarted: true };

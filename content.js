@@ -1239,6 +1239,14 @@
   // which order the generations finish in.
   let pipelineJobTiles       = new Map();   // jobIndex -> tileId
   let pipelineResolvedTiles  = new Set();   // tileIds already pushed to the finished queue
+  // Every tile that belongs to someone: tiles present before the run, each job's own tile,
+  // and any extra tiles a submission produced. A new submission may only claim a tile that
+  // is in none of these, so a late or extra card can never be credited to the wrong prompt.
+  let pipelineClaimedTiles   = new Set();
+  // Jobs Flow accepted (prompt left the box) but whose card we couldn't identify. A stray
+  // image is credited to one of these only when exactly one exists; otherwise it's ignored.
+  let pipelineUntrackedJobs  = new Map();   // jobIndex -> time accepted
+  const UNTRACKED_GIVE_UP_MS = 90_000;
 
   // Flow's current build gives result tiles no stable identifier of its own — the wrapper
   // is <flow-tile-container> carrying only Angular's _ngcontent/_nghost markers. So we
@@ -1277,16 +1285,16 @@
     return ids;
   }
 
-  // Poll for a tile id that wasn't in `knownIds` yet — this is the placeholder card Flow
-  // inserts immediately on submit (observed ~800ms after click), well before its image.
+  // Poll for a tile that is neither in `knownIds` nor already claimed by a job — this is the
+  // placeholder card Flow inserts right after a submit (observed ~800ms), well before its image.
   async function waitForNewTile(knownIds, timeoutMs) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (pipelineStopped) return null;
       for (const id of getAllTileIds()) {
-        if (!knownIds.has(id)) return id;
+        if (!knownIds.has(id) && !pipelineClaimedTiles.has(id)) return id;
       }
-      await sleep(300);
+      await sleep(250);
     }
     return null;
   }
@@ -1342,21 +1350,33 @@
       }
     }
 
-    // Fallback: catch any generated image/failure not tied to a tracked tile (e.g. a job
-    // whose placeholder tile we failed to detect in time). Tagged jobIndex: null so the
-    // sidepanel falls back to best-effort ordering for just that one item.
-    const imgs = generatedImages();
-    for (const img of imgs) {
+    // Images outside every claimed tile. These used to be credited to whichever prompt had
+    // waited longest, which saved one prompt's picture under another prompt's name. Now a
+    // stray image is credited only when exactly one accepted job has no known tile (so the
+    // match is certain); anything else is ignored rather than guessed.
+    for (const img of generatedImages()) {
       const src = img.src;
-      if (src && !pipelineSeenSrcs.has(src)) {
-        pipelineSeenSrcs.add(src);
-        pipelineFinishedQueue.push({ type: "image", src, jobIndex: null });
+      if (!src || pipelineSeenSrcs.has(src)) continue;
+      pipelineSeenSrcs.add(src);
+      const tile = img.closest(`[${NEXUS_TILE_ATTR}], [data-tile-id]`);
+      if (tile && pipelineClaimedTiles.has(tileIdOf(tile))) continue;   // a known job's (or pre-run) tile
+      if (pipelineUntrackedJobs.size === 1) {
+        const [jobIndex] = pipelineUntrackedJobs.keys();
+        pipelineUntrackedJobs.delete(jobIndex);
+        if (tile) pipelineClaimedTiles.add(tileIdOf(tile));
+        pipelineFinishedQueue.push({ type: "image", src, jobIndex });
+      } else {
+        warn("Pipeline: ignoring an image that can't be matched to a prompt with certainty.");
       }
     }
-    const fc = countFailCards();
-    if (fc > pipelineLastFailCount) {
-      for (let k = 0; k < fc - pipelineLastFailCount; k++) pipelineFinishedQueue.push({ type: "fail", jobIndex: null });
-      pipelineLastFailCount = fc;
+
+    // An accepted job that never showed a card or a certain match is reported as failed
+    // (the panel offers Retry) instead of holding a slot until the long collect timeout.
+    for (const [jobIndex, since] of pipelineUntrackedJobs) {
+      if (Date.now() - since > UNTRACKED_GIVE_UP_MS) {
+        pipelineUntrackedJobs.delete(jobIndex);
+        pipelineFinishedQueue.push({ type: "fail", jobIndex });
+      }
     }
   }
 
@@ -1423,73 +1443,75 @@
 
     await sleep(200);
 
-    // Snapshot tile ids *before* submitting so we can spot the new placeholder card this
-    // specific submission creates, regardless of how many other generations are in flight.
-    const tileBaseline = getAllTileIds();
-
-    let submitted = false;
-    if (!preferEnter) {
-      const submit = findSubmitButton(selectors);
-      if (submit) {
-        try {
-          submitted = await clickSubmitButton(submit);
-          if (submitted) log("Pipeline: clicked submit button.");
-        } catch (e) {
-          warn("Pipeline submit click failed:", e?.message || e);
-        }
-      }
-    }
-
-    // Also send Enter on the prompt editor
-    const liveEd = liveEditor(input);
-    if (liveEd) {
-      await submitViaEnter(liveEd);
-      log("Pipeline: sent Enter on prompt editor.");
-    }
-
-    // Check if prompt was accepted (box cleared or tile appeared)
     const promptStillInBox = () => {
       const ed = liveEditor(input);
       return !!ed && editorSeemsToContain(ed, text);
     };
 
-    let accepted = false;
-    for (let check = 0; check < 15; check++) {
-      if (pipelineStopped) break;
-      if (!promptStillInBox()) {
-        accepted = true;
-        break;
+    // Send ONCE: the button if there is one, otherwise Enter. Sending both (as before) could
+    // start the same prompt twice.
+    const send = async () => {
+      const submit = preferEnter ? null : findSubmitButton(selectors);
+      if (submit) {
+        try { await clickSubmitButton(submit); log("Pipeline: clicked submit."); return; }
+        catch (e) { warn("Pipeline submit click failed:", e?.message || e); }
       }
-      await sleep(200);
+      const ed = liveEditor(input);
+      if (ed) { await submitViaEnter(ed); log("Pipeline: sent Enter."); }
+    };
+
+    // Snapshot tiles right before sending: the generation this submit starts is the first
+    // tile that is new and not already claimed by another job.
+    const tileBaseline = getAllTileIds();
+    await send();
+    let tileId = await waitForNewTile(tileBaseline, 8000);
+
+    // No new card. Send again only if the prompt is still sitting in the box (Flow didn't
+    // take it, e.g. too many generations running). If the box was cleared, Flow took it and
+    // a second send would start a duplicate.
+    for (let attempt = 0; !tileId && attempt < 2 && !pipelineStopped && promptStillInBox(); attempt++) {
+      warn(`Pipeline: no new card and the prompt is still in the box; sending again (${attempt + 1}/2).`);
+      await sleep(2000);
+      await send();
+      tileId = await waitForNewTile(tileBaseline, 8000);
+    }
+    if (pipelineStopped) return { stopped: true };
+
+    if (!tileId) {
+      if (promptStillInBox()) {
+        // Never started. Clear the box so the text can't ride along with the next prompt.
+        const ed = liveEditor(input);
+        if (ed) { await focusEditorLikeUser(ed); await clearEditorContent(ed); }
+        return { error: "Flow didn't start a generation for this prompt (it may be busy).", notStarted: true };
+      }
+      // Flow took the prompt but no card appeared that we could identify.
+      warn(`Pipeline: job ${payload.jobIndex} accepted but no card identified; matching only if certain.`);
+      if (typeof payload.jobIndex === "number") pipelineUntrackedJobs.set(payload.jobIndex, Date.now());
+      return { ok: true, untracked: true };
     }
 
-    // If still in the prompt box, retry clicking submit button & Enter
-    if (!accepted && !pipelineStopped) {
-      warn("Pipeline: prompt still in editor — retrying submit click & Enter...");
-      const submitRetry = findSubmitButton(selectors);
-      if (submitRetry) {
-        await clickSubmitButton(submitRetry);
-      }
-      const edRetry = liveEditor(input);
-      if (edRetry) {
-        await submitViaEnter(edRetry);
-      }
-      await sleep(500);
-    }
-
-    // Brief settle so Flow registers this generation before the next submit lands.
-    await sleep(1000);
-
+    pipelineClaimedTiles.add(tileId);
     if (typeof payload.jobIndex === "number") {
-      // Placeholder tiles appear ~800ms after submit in practice; give it a generous budget.
-      const tileId = await waitForNewTile(tileBaseline, 6500);
-      if (tileId) {
-        pipelineJobTiles.set(payload.jobIndex, tileId);
-        log(`Pipeline: job ${payload.jobIndex} -> tile ${tileId}`);
-      } else {
-        warn(`Pipeline: job ${payload.jobIndex} — no new tile detected; this job will fall back to best-effort ordering.`);
-      }
+      pipelineJobTiles.set(payload.jobIndex, tileId);
+      log(`Pipeline: job ${payload.jobIndex} -> tile ${tileId}`);
     }
+
+    // Claim any further cards this same submission produces (several outputs per prompt,
+    // or a duplicate start) so the next prompt can't pick one of them up as its own.
+    const extrasUntil = Date.now() + 1500;
+    while (Date.now() < extrasUntil && !pipelineStopped) {
+      for (const id of getAllTileIds()) {
+        if (!tileBaseline.has(id) && !pipelineClaimedTiles.has(id)) {
+          pipelineClaimedTiles.add(id);
+          log(`Pipeline: extra card ${id} from the same submission — ignored.`);
+        }
+      }
+      await sleep(250);
+    }
+
+    // Let Flow clear the prompt box before the next prompt is typed, so a late clear can't
+    // wipe the next prompt's text.
+    for (let i = 0; i < 15 && promptStillInBox() && !pipelineStopped; i++) await sleep(200);
 
     return { ok: true };
   }
@@ -1620,6 +1642,8 @@
       pipelineStopped       = false;
       pipelineJobTiles      = new Map();
       pipelineResolvedTiles = new Set();
+      pipelineClaimedTiles  = getAllTileIds();   // everything already on the page belongs to earlier work
+      pipelineUntrackedJobs = new Map();
       stopPipelineScanning();
       pipelineScanInterval = setInterval(scanPipeline, 700);
       pipelineObserver = new MutationObserver(scanPipeline);

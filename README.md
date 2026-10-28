@@ -7,7 +7,7 @@ result, attaches a consistent character reference to every prompt, and auto-down
 It is a heavily modified fork of an extension originally called **ZAPI FLOW**, rebranded and
 extended into **Nexus Flow Pro**.
 
-- **Version:** 1.1.1
+- **Version:** 1.1.2
 - **Target site:** `https://labs.google/fx/*` (Google Flow projects)
 - **Type:** Unpacked Chrome extension (Manifest V3, side panel)
 - **No build step.** Plain JS/HTML/CSS. Edit files directly and reload the extension.

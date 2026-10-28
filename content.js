@@ -1243,10 +1243,6 @@
   // and any extra tiles a submission produced. A new submission may only claim a tile that
   // is in none of these, so a late or extra card can never be credited to the wrong prompt.
   let pipelineClaimedTiles   = new Set();
-  // Jobs Flow accepted (prompt left the box) but whose card we couldn't identify. A stray
-  // image is credited to one of these only when exactly one exists; otherwise it's ignored.
-  let pipelineUntrackedJobs  = new Map();   // jobIndex -> time accepted
-  const UNTRACKED_GIVE_UP_MS = 90_000;
 
   // Flow's current build gives result tiles no stable identifier of its own — the wrapper
   // is <flow-tile-container> carrying only Angular's _ngcontent/_nghost markers. So we
@@ -1350,34 +1346,9 @@
       }
     }
 
-    // Images outside every claimed tile. These used to be credited to whichever prompt had
-    // waited longest, which saved one prompt's picture under another prompt's name. Now a
-    // stray image is credited only when exactly one accepted job has no known tile (so the
-    // match is certain); anything else is ignored rather than guessed.
-    for (const img of generatedImages()) {
-      const src = img.src;
-      if (!src || pipelineSeenSrcs.has(src)) continue;
-      pipelineSeenSrcs.add(src);
-      const tile = img.closest(`[${NEXUS_TILE_ATTR}], [data-tile-id]`);
-      if (tile && pipelineClaimedTiles.has(tileIdOf(tile))) continue;   // a known job's (or pre-run) tile
-      if (pipelineUntrackedJobs.size === 1) {
-        const [jobIndex] = pipelineUntrackedJobs.keys();
-        pipelineUntrackedJobs.delete(jobIndex);
-        if (tile) pipelineClaimedTiles.add(tileIdOf(tile));
-        pipelineFinishedQueue.push({ type: "image", src, jobIndex });
-      } else {
-        warn("Pipeline: ignoring an image that can't be matched to a prompt with certainty.");
-      }
-    }
-
-    // An accepted job that never showed a card or a certain match is reported as failed
-    // (the panel offers Retry) instead of holding a slot until the long collect timeout.
-    for (const [jobIndex, since] of pipelineUntrackedJobs) {
-      if (Date.now() - since > UNTRACKED_GIVE_UP_MS) {
-        pipelineUntrackedJobs.delete(jobIndex);
-        pipelineFinishedQueue.push({ type: "fail", jobIndex });
-      }
-    }
+    // Images outside every tracked tile used to be credited to whichever prompt had waited
+    // longest, which saved one prompt's picture under another prompt's name. Every job now
+    // has its own tile (or is re-sent), so an unmatched image is simply ignored.
   }
 
   function stopPipelineScanning() {
@@ -1477,17 +1448,19 @@
     }
     if (pipelineStopped) return { stopped: true };
 
+    // The box was cleared but no card yet: give a slow card a little longer before deciding.
+    if (!tileId && !pipelineStopped && !promptStillInBox()) {
+      tileId = await waitForNewTile(tileBaseline, 8000);
+    }
+    if (pipelineStopped) return { stopped: true };
+
     if (!tileId) {
-      if (promptStillInBox()) {
-        // Never started. Clear the box so the text can't ride along with the next prompt.
-        const ed = liveEditor(input);
-        if (ed) { await focusEditorLikeUser(ed); await clearEditorContent(ed); }
-        return { error: "Flow didn't start a generation for this prompt (it may be busy).", notStarted: true };
-      }
-      // Flow took the prompt but no card appeared that we could identify.
-      warn(`Pipeline: job ${payload.jobIndex} accepted but no card identified; matching only if certain.`);
-      if (typeof payload.jobIndex === "number") pipelineUntrackedJobs.set(payload.jobIndex, Date.now());
-      return { ok: true, untracked: true };
+      // No card means no generation, even if Flow cleared the box (it does that when it
+      // silently drops a prompt while busy). Report it so the panel sends it again, rather
+      // than waiting for a picture that will never come.
+      const ed = liveEditor(input);
+      if (ed && promptStillInBox()) { await focusEditorLikeUser(ed); await clearEditorContent(ed); }
+      return { error: "Flow didn't start a generation for this prompt (it may be busy).", notStarted: true };
     }
 
     pipelineClaimedTiles.add(tileId);
@@ -1643,7 +1616,6 @@
       pipelineJobTiles      = new Map();
       pipelineResolvedTiles = new Set();
       pipelineClaimedTiles  = getAllTileIds();   // everything already on the page belongs to earlier work
-      pipelineUntrackedJobs = new Map();
       stopPipelineScanning();
       pipelineScanInterval = setInterval(scanPipeline, 700);
       pipelineObserver = new MutationObserver(scanPipeline);

@@ -411,14 +411,47 @@
   // Find the named reference option in the open picker. On the current build each asset
   // is a button[role="option"].asset-item whose thumbnail img has an EMPTY alt, so the
   // filename is matched from the row's text label instead.
-  function findReferenceOption(name) {
+  function optionShows(opt, name) {
+    const alt = opt.querySelector("img")?.getAttribute("alt") || "";
+    if (refNameMatches(alt, name)) return true;
+    return Array.from(opt.querySelectorAll("div, span")).some(d => refNameMatches(d.textContent, name));
+  }
+
+  function pickerOptions() {
     const dlg = getPickerPanel() || document;
-    for (const opt of Array.from(dlg.querySelectorAll('[role="option"]')).filter(isVisible)) {
-      const alt = opt.querySelector("img")?.getAttribute("alt") || "";
-      if (refNameMatches(alt, name)) return opt;
-      const labelHit = Array.from(opt.querySelectorAll("div, span"))
-        .some(d => refNameMatches(d.textContent, name));
-      if (labelHit) return opt;
+    return Array.from(dlg.querySelectorAll('[role="option"]')).filter(isVisible);
+  }
+
+  function findReferenceOption(name) {
+    return pickerOptions().find(opt => optionShows(opt, name)) || null;
+  }
+
+  // The picker's list is virtualized: when it re-renders (after opening, or after the search
+  // filter applies) it REUSES row elements to show different assets. A row found mid-update
+  // can show another image by the time it's clicked, which attached the wrong reference. So
+  // wait until the visible rows stop changing before choosing one.
+  async function waitForPickerToSettle(maxMs = 2500, quietMs = 150) {
+    const snapshot = () => pickerOptions()
+      .map(o => (o.textContent || "").trim() + "|" + (o.querySelector("img")?.getAttribute("src") || ""))
+      .join("\n");
+    const deadline = Date.now() + maxMs;
+    let last = snapshot();
+    let since = Date.now();
+    while (Date.now() < deadline && !pipelineStopped) {
+      await sleep(50);
+      const now = snapshot();
+      if (now !== last) { last = now; since = Date.now(); continue; }
+      if (Date.now() - since >= quietMs) return true;
+    }
+    return false;
+  }
+
+  // Selection state, if Flow exposes it: true / false, or null when it can't be told.
+  function optionSelected(opt) {
+    for (const node of [opt, opt.querySelector('[aria-selected], [aria-checked], input[type="checkbox"]')].filter(Boolean)) {
+      if (node.matches?.('input[type="checkbox"]')) return node.checked;
+      const v = node.getAttribute("aria-selected") ?? node.getAttribute("aria-checked");
+      if (v !== null) return v === "true";
     }
     return null;
   }
@@ -528,9 +561,21 @@
   // this returns false and every caller below degrades to the old assume-the-click-worked
   // behaviour rather than retrying. A false negative must never be able to resurrect the
   // re-search loop.
+  // The prompt bar: the closest container around the prompt editor that also holds the
+  // "add ingredients" button. Attached-reference chips live here; anything outside it (an
+  // asset grid, the uploads list) must never count as "attached".
+  function promptBarRoot() {
+    const ed = findFlowPromptEditor();
+    let n = ed?.parentElement;
+    for (let i = 0; n && n !== document.body && i < 10; i++, n = n.parentElement) {
+      if (n.querySelector('button[aria-label*="ingredient" i], button[aria-haspopup="dialog"]')) return n;
+    }
+    return ed?.parentElement?.parentElement || document;
+  }
+
   function isReferenceAttached(name) {
     const panels = Array.from(document.querySelectorAll('[role="dialog"], flow-add-menu-popover-content'));
-    for (const img of document.querySelectorAll("img[alt]")) {
+    for (const img of promptBarRoot().querySelectorAll("img[alt]")) {
       if (!isVisible(img)) continue;
       if (panels.some(d => d.contains(img))) continue;   // that's the picker's copy
       if (refNameMatches(img.getAttribute("alt"), name)) return true;
@@ -538,56 +583,23 @@
     return false;
   }
 
+  // Names of the extension's own references (ref-1a2b3c4d.png / reference3.png) currently
+  // attached to the prompt bar, i.e. outside any picker panel.
+  function attachedOurReferences() {
+    const panels = Array.from(document.querySelectorAll('[role="dialog"], flow-add-menu-popover-content'));
+    const names = new Set();
+    for (const img of promptBarRoot().querySelectorAll("img[alt]")) {
+      if (!isVisible(img) || panels.some(d => d.contains(img))) continue;
+      const alt = (img.getAttribute("alt") || "").trim();
+      if (/^(ref-[0-9a-f]{8}|reference\d+)(\.png)?$/i.test(alt)) names.add(alt);
+    }
+    return [...names];
+  }
+
   // Poll until the ingredient chip shows up, so an attach is CONFIRMED by the page rather
   // than inferred from the fact that we clicked something.
   async function waitForReferenceAttached(name, timeoutMs = 3000) {
     return !!(await waitFor(() => isReferenceAttached(name), timeoutMs, 60));
-  }
-
-  // Select the existing reference.png from the project and attach it.
-  //
-  // Returns { clicked, confirmed }:
-  //   clicked   — we found the asset in the picker and clicked it
-  //   confirmed — the ingredient chip then actually appeared on the prompt bar
-  // The caller needs both: `clicked` says "do NOT search again this prompt" (searching
-  // after a click is what used to hang, since the attached asset leaves the list), while
-  // `confirmed` says "the reference is really on this prompt".
-  async function selectExistingReference(name) {
-    // Give the picker's list a moment to populate before searching.
-    await waitFor(() => getPickerPanel()?.querySelector('[role="option"]'), 2000, 50);
-
-    let opt = findReferenceOption(name);
-
-    // Primary: filter via the search box (defeats list virtualization). Try the full
-    // name first, then the bare base name (e.g. "reference5") since the last-uploaded
-    // asset is sometimes the slowest/hardest to surface by exact filename.
-    const base = (name || "").replace(/\.png$/i, "");
-    const queries = [name, base].filter((q, idx, a) => q && a.indexOf(q) === idx);
-    for (const q of queries) {
-      if (opt || pipelineStopped) break;
-      if (await searchPickerForReference(name, q)) {
-        opt = await waitFor(() => findReferenceOption(name), 3000, 60);   // filtered list re-render
-        if (pipelineStopped) return { clicked: false, confirmed: false };
-      }
-    }
-
-    // Fallback: scroll the virtualized list to bring the reference into the DOM.
-    if (!opt) {
-      log("Search didn't surface the reference — scrolling the list to find it.");
-      opt = await scrollFindReference(name);
-    }
-
-    if (!opt) return { clicked: false, confirmed: false };
-    log(`Found existing ${name} in project — selecting it.`);
-    opt.click();                       // selecting the option attaches it as an ingredient
-    // "Add to Prompt" is best-effort: some flows attach on click alone, and the button
-    // can disappear once the asset is added. Either way we must NOT search again — the
-    // asset has left the list, and re-searching it is exactly what used to hang.
-    if (!isReferenceAttached(name)) await clickAddToPrompt();
-
-    // Confirm against the page instead of assuming the click landed.
-    const confirmed = await waitForReferenceAttached(name);
-    return { clicked: true, confirmed };
   }
 
   // NOTE: there is deliberately no "references we already attached" cache here. Flow drops
@@ -630,69 +642,122 @@
     if (getPickerPanel()) warn("Picker panel is still open after Escape and backdrop click.");
   }
 
-  // ── GENERATION path: SELECT ONLY, never upload ─────────────────────────────
-  // During generation we only attach references that ALREADY exist in the project.
-  // Flow clears the ingredients on every submit, so each prompt genuinely has to find and
-  // re-attach the reference — this is not redundant work, it is required.
-  //
-  // The rule that matters: NEVER search again after we have clicked the asset. A clicked
-  // asset is attached, an attached asset leaves the picker list, so a post-click search
-  // can only ever fail — that feedback loop is what used to hang the extension.
-  //
-  // A *pre*-click retry is safe and is what we now spend the budget on, because the real
-  // remaining failure is a race: the previous submit has not released the asset back into
-  // the picker yet, so the first look misses something that is about to reappear.
-  async function selectReferenceOnly(el, name) {
-    if (pipelineStopped) return false;
+  // ── Attach all of a prompt's references in ONE picker visit ──────────────────────────
+  // Flow's picker can keep images ticked between openings, and "Add to Prompt" adds every
+  // ticked image. Attaching one reference per visit therefore re-added earlier picks (other
+  // characters ended up on the prompt). Now: open once, untick leftovers, tick exactly this
+  // prompt's references, check nothing else is ticked, then Add once.
+  let pickerTickedByUs = new Set();   // references we ticked earlier (may still be ticked)
 
-    // Already on the prompt bar (Flow hasn't cleared it yet)? Nothing to do — and opening
-    // the picker here would only risk detaching it.
-    if (isReferenceAttached(name)) {
-      log(`${name} is already attached — no picker needed.`);
-      return true;
+  function pickerSearchInput() {
+    const dlg = getPickerPanel();
+    if (!dlg) return null;
+    const i = dlg.querySelector('input[placeholder*="search" i]') || dlg.querySelector('input[type="search"]') ||
+              dlg.querySelector('input[type="text"]') || dlg.querySelector("input");
+    return i && isVisible(i) ? i : null;
+  }
+
+  async function clearPickerSearch() {
+    const input = pickerSearchInput();
+    if (input && input.value) {
+      setFrameworkInputValue(input, "");
+      await waitForPickerToSettle();
     }
+  }
 
-    let clicked = false;
-    let confirmed = false;
-
-    for (let attempt = 1; attempt <= 2 && !clicked; attempt++) {
-      if (pipelineStopped) break;
-      if (await openPickerAndWait()) {
-        if (!pipelineStopped) {
-          const r = await selectExistingReference(name);
-          clicked = r.clicked;
-          confirmed = r.confirmed;
+  // Bring `name`'s row into view (search, then scroll) and return it once the list is settled.
+  async function revealOption(name) {
+    let opt = findReferenceOption(name);
+    if (!opt) {
+      const base = name.replace(/\.png$/i, "");
+      for (const q of [name, base]) {
+        if (pipelineStopped) return null;
+        if (await searchPickerForReference(name, q)) {
+          await waitForPickerToSettle();
+          opt = findReferenceOption(name) || await waitFor(() => findReferenceOption(name), 1500, 60);
+          if (opt) break;
         }
       }
-      // Always leave a clean slate — never leave a picker panel open for the next ref.
-      if (getPickerPanel()) await closeOpenDialog();
+    }
+    if (!opt) opt = await scrollFindReference(name);
+    // Re-read rather than reuse: the row must still show this reference right now.
+    return opt ? findReferenceOption(name) : null;
+  }
 
-      // Missed it entirely. Most likely the last submit hasn't released the asset back
-      // into the list yet, so give Flow a beat and take one more look.
-      if (!clicked && attempt === 1 && !pipelineStopped) {
-        log(`${name} not in the picker yet — waiting for Flow to release it, then retrying once.`);
-        if (await waitFor(() => isReferenceAttached(name), 1500, 100)) { clicked = confirmed = true; break; }
+  // Make `name` ticked (want=true) or unticked. Returns false only if a wanted one can't be found.
+  async function setTicked(name, want) {
+    const opt = await revealOption(name);
+    if (!opt) { if (!want) pickerTickedByUs.delete(name); return !want; }
+    const sel = optionSelected(opt);
+    if (want ? sel !== true : sel === true) {
+      opt.click();
+      await waitFor(() => { const o = findReferenceOption(name); return o && optionSelected(o) !== sel; }, 600, 40);
+    }
+    if (want && sel !== null) pickerTickedByUs.add(name);
+    else pickerTickedByUs.delete(name);
+    return true;
+  }
+
+  function untickVisibleExcept(names) {
+    let n = 0;
+    for (const o of pickerOptions()) {
+      if (optionSelected(o) === true && !names.some(nm => optionShows(o, nm))) { o.click(); n++; }
+    }
+    return n;
+  }
+
+  // Returns the names that couldn't be attached (empty = all attached).
+  async function attachReferences(el, names) {
+    if (!names.length) return [];
+    const attached = attachedOurReferences();
+    if (names.every(n => attached.some(a => refNameMatches(a, n))) &&
+        attached.every(a => names.some(n => refNameMatches(a, n)))) {
+      log("All references already attached — no picker needed.");
+      return [];
+    }
+
+    let missing = names.slice();
+    for (let attempt = 1; attempt <= 2 && missing.length && !pipelineStopped; attempt++) {
+      if (getPickerPanel()) await closeOpenDialog();
+      if (!(await openPickerAndWait())) continue;
+      await waitFor(() => getPickerPanel()?.querySelector('[role="option"]'), 2000, 50);
+      await waitForPickerToSettle();
+
+      // 1. untick leftovers: visible ones, then ones we ticked before that may be scrolled away
+      if (untickVisibleExcept(names)) await waitForPickerToSettle(600);
+      for (const n of [...pickerTickedByUs]) {
+        if (!names.includes(n) && !pipelineStopped) await setTicked(n, false);
+      }
+      // 2. tick exactly this prompt's references
+      missing = [];
+      for (const n of names) {
+        if (pipelineStopped) break;
+        if (!(await setTicked(n, true))) missing.push(n);
+      }
+      // 3. final check over the unfiltered list
+      await clearPickerSearch();
+      if (untickVisibleExcept(names)) await waitForPickerToSettle(600);
+
+      if (missing.length) {
+        // Don't add a partial set: the prompt is skipped anyway, and added chips would linger.
+        warn(`Not in the picker: ${missing.join(", ")}${attempt === 1 ? " — retrying once." : "."}`);
+        await closeOpenDialog();
+        if (attempt === 1) await sleep(1200);
       }
     }
+    if (missing.length || pipelineStopped) {
+      if (getPickerPanel()) await closeOpenDialog();
+      return pipelineStopped ? [] : missing;
+    }
 
-    // Attaching a chip re-renders the prompt bar, so focus whatever node is live now.
+    await clickAddToPrompt();
+    const ok = await waitFor(() => names.every(n => isReferenceAttached(n)), 3000, 60);
+    if (getPickerPanel()) await closeOpenDialog();
     const editorNow = liveEditor(el);
     if (editorNow) await focusEditorLikeUser(editorNow);
-
-    if (clicked && confirmed) {
-      log(`Attached existing ${name} (confirmed on the prompt bar).`);
-      return true;
-    }
-    if (clicked) {
-      // We clicked the asset but never saw a chip. Trust the click: re-searching is the
-      // one thing that is guaranteed to fail, and this is also how the extension behaved
-      // before confirmation existed — so an undetectable chip degrades to the old
-      // working behaviour instead of costing a generation.
-      warn(`Clicked ${name} but couldn't confirm the chip on the prompt bar — proceeding anyway.`);
-      return true;
-    }
-    warn(`${name} never appeared in the picker — this prompt has no reference attached.`);
-    return false;
+    if (ok) log(`Attached ${names.join(", ")} (confirmed on the prompt bar).`);
+    else warn(`Added ${names.join(", ")} but couldn't confirm the chips on the prompt bar — proceeding.`);
+    return [];
   }
 
   // Paste a brand-new image into the editor so Flow uploads it to the project library.
@@ -755,11 +820,16 @@
     // Attach every reference image by SELECTING the existing project asset. Generation
     // NEVER uploads — if a reference isn't already in the project it is reported as
     // missing. (Use the "Load references" button first to upload them.)
-    for (const ref of (refImageFiles || [])) {
-      if (pipelineStopped) break;
-      if (!(await selectReferenceOnly(el, ref.name))) missingRefs.push(ref.name);
-      el = liveEditor(el);   // attaching a chip re-renders the prompt bar
-      if (!el) return false;
+    missingRefs.push(...await attachReferences(el, (refImageFiles || []).map(r => r.name)));
+    el = liveEditor(el);   // attaching chips re-renders the prompt bar
+    if (!el) return false;
+
+    // Never generate with a character that wasn't chosen for this prompt: if one of our
+    // references that isn't on this prompt's list is attached, report it (the prompt is
+    // skipped and can be retried) rather than send it.
+    const expected = (refImageFiles || []).map(r => r.name);
+    for (const shown of attachedOurReferences()) {
+      if (!expected.some(n => refNameMatches(shown, n))) missingRefs.push(`${shown} (wrong image attached)`);
     }
 
     if (!text) return true;

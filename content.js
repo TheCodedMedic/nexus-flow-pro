@@ -662,11 +662,17 @@
       if (!alt) continue;
       if (/^(ref-[0-9a-f]{8}|reference\d+)(\.png)?$/i.test(alt) && !expectedNames.some(n => refNameMatches(alt, n))) {
         log(`Removing leftover reference chip '${alt}' not wanted for this prompt.`);
-        const chip = img.closest('[role="button"], mat-chip, flow-chip, .chip, [class*="chip"]') || img.parentElement;
-        const removeBtn = chip?.querySelector('button, [role="button"], mat-icon, [aria-label*="remove" i], [aria-label*="delete" i], [aria-label*="close" i]');
-        if (removeBtn && isVisible(removeBtn)) {
+        // Only ever click a real remove control inside the chip itself. Falling back to the
+        // image's parent could land on an unrelated button (even Generate), so skip instead.
+        const chip = img.closest('mat-chip, flow-chip, .chip, [class*="chip"]');
+        const removeBtn = chip && Array.from(chip.querySelectorAll('button, [role="button"], mat-icon'))
+          .find(b => isVisible(b) && !b.contains(img) &&
+            /remove|delete|close|clear|cancel/i.test(`${b.getAttribute("aria-label") || ""} ${b.textContent || ""}`));
+        if (removeBtn) {
           removeBtn.click();
-          await sleep(250);
+          await waitFor(() => !img.isConnected || !isVisible(img), 600, 50);
+        } else {
+          warn(`Couldn't find a remove button for leftover chip '${alt}' — leaving it.`);
         }
       }
     }
@@ -723,19 +729,21 @@
 
     // Settle before clicking so we don't click a recycled row mid-update
     await waitForPickerToSettle(800, 100);
-    opt = findReferenceOption(name) || opt;
+    // Flow recycles picker rows, so only fall back to the earlier row if it still shows
+    // this reference — otherwise we'd tick whatever image now sits in it.
+    opt = findReferenceOption(name) || (opt.isConnected && optionShows(opt, name) ? opt : null);
+    if (!opt) return { clicked: false, confirmed: false };
 
     log(`Found existing ${name} in project — selecting it.`);
     if (optionSelected(opt) !== true) {
       opt.click();
-      await sleep(250);
+      await waitFor(() => optionSelected(opt) === true, 250, 25);
     }
 
     // "Add to Prompt" is best-effort: some flows attach on click alone, and the button
     // can disappear once the asset is added.
     if (!isReferenceAttached(name)) {
       await clickAddToPrompt();
-      await sleep(250);
     }
 
     // Confirm against the page instead of assuming the click landed.

@@ -1789,8 +1789,14 @@
   }
 
   function scrollerSet(s, top) {
-    if (isWindowScroller(s)) window.scrollTo(0, top);
-    else s.scrollTop = top;
+    if (isWindowScroller(s)) {
+      window.scrollTo(0, top);
+      window.dispatchEvent(new Event("scroll", { bubbles: true }));
+    } else {
+      s.scrollTop = top;
+      s.dispatchEvent(new Event("scroll", { bubbles: true }));
+      window.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
   }
 
   // Scroll the whole grid top→bottom, recording each generated-image src the first time
@@ -1799,6 +1805,9 @@
     const seen = new Set();
     const order = [];
     const allItems = [];
+    const targetCount = typeof options.expectedCount === "number" && options.expectedCount > 0
+      ? options.expectedCount
+      : Infinity;
 
     const record = () => {
       for (const img of generatedImages()) {
@@ -1818,14 +1827,64 @@
     record();
 
     let guard = 0;
-    while (guard++ < 500) {
+    let bottomWaitCount = 0;
+    const maxBottomWaits = 10; // wait up to ~4.5 seconds at the bottom for Flow's infinite scroll
+
+    while (guard++ < 800) {
       if (pipelineStopped) break;
-      const m = scrollerMetrics(s);
       record();
-      if (m.top + m.client >= m.height - 4) { await sleep(300); record(); break; }
+
+      if (order.length >= targetCount) {
+        log(`Collected expected count of ${order.length} image(s). Stopping scan.`);
+        break;
+      }
+
+      const m = scrollerMetrics(s);
+      const isAtBottom = (m.top + m.client >= m.height - 15);
+
+      if (isAtBottom) {
+        const prevCount = order.length;
+        const prevHeight = m.height;
+
+        // Oscillate scroll slightly to trigger Angular CDK scroll dispatcher and IntersectionObserver
+        scrollerSet(s, Math.max(0, m.top - 40));
+        await sleep(150);
+        scrollerSet(s, m.height);
+        await sleep(300);
+
+        // Check if there is any visible "Load more" button
+        const loadMoreBtn = Array.from(document.querySelectorAll('button, [role="button"]'))
+          .find(b => isVisible(b) && /load more|show more|view more/i.test(b.textContent));
+        if (loadMoreBtn) {
+          loadMoreBtn.click();
+          await sleep(600);
+        }
+
+        record();
+        const newM = scrollerMetrics(s);
+
+        if (order.length > prevCount || newM.height > prevHeight + 40) {
+          // Flow loaded new content! Reset bottom wait counter
+          bottomWaitCount = 0;
+          continue;
+        }
+
+        bottomWaitCount++;
+        if (bottomWaitCount >= maxBottomWaits) {
+          log(`Reached end of Flow history (${order.length} total images found).`);
+          break;
+        }
+        await sleep(300);
+        continue;
+      } else {
+        bottomWaitCount = 0;
+      }
+
+      // Scroll down by most of a viewport
       scrollerSet(s, m.top + Math.max(300, m.client - 140));
       await sleep(350);
     }
+
     scrollerSet(s, 0);
     log(`Scan finished: collected ${order.length} generated images.`);
     return { order, allItems };

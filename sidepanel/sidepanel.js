@@ -838,12 +838,16 @@ async function pushAllImages() {
       return;
     }
     flowTabId = tab.id;
-    setStatus("Scanning generated images from Flow project…");
+    const totalPrompts = lines.length;
+    setStatus(`Scanning Flow project for ${totalPrompts} generated images…`);
     isPushing = true;
     pushAllBtn.disabled = true;
 
     try {
-      const res = await sendToFlowTab({ type: "FLOW_COLLECT_ALL_IMAGES" });
+      const res = await sendToFlowTab({
+        type: "FLOW_COLLECT_ALL_IMAGES",
+        expectedCount: totalPrompts
+      });
       if (!res?.ok || !Array.isArray(res.srcs) || !res.srcs.length) {
         setStatus(res?.error || "No generated images found on the Flow page. Make sure images are visible in the project.");
         isPushing = false;
@@ -852,7 +856,6 @@ async function pushAllImages() {
       }
 
       const totalImages = res.srcs.length;
-      const totalPrompts = lines.length;
       log(`Found ${totalImages} image(s) on Flow page for ${totalPrompts} prompt(s).`);
 
       // Google Flow renders newest at top, oldest at bottom.

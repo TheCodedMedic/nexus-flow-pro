@@ -802,11 +802,12 @@ function countUnsavedGenerated() {
 
 function refreshPushAllButton() {
   if (!pushAllBtn) return;
+  const destName = saveDest === "drive" ? "Drive" : "Computer";
   const count = countUnsavedGenerated();
-  if (count > 0 && !isRunning) {
+  // Show button whenever in manual mode OR whenever there are images to push
+  if (!isRunning && (saveTiming === "manual" || count > 0)) {
     pushAllBtn.hidden = false;
-    const destName = saveDest === "drive" ? "Drive" : "Computer";
-    pushAllBtn.textContent = `Push ${count} to ${destName}`;
+    pushAllBtn.textContent = count > 0 ? `Push ${count} to ${destName}` : `Push to ${destName}`;
     pushAllBtn.disabled = isPushing;
   } else {
     pushAllBtn.hidden = true;
@@ -818,12 +819,76 @@ async function pushAllImages() {
   const destError = await destinationProblem();
   if (destError) { setStatus(destError); return; }
 
-  const toPush = promptStatuses
+  const lines = parsePrompts();
+  if (!lines.length) { setStatus("Paste your prompt list first."); return; }
+
+  // Check if we already have URLs in memory
+  let toPush = promptStatuses
     .map((item, idx) => ({ item, idx }))
-    .filter(({ item }) => item.url && item.status !== "done" && item.status !== "saving");
+    .filter(({ item }) => item?.url && item.status !== "done" && item.status !== "saving");
+
+  // If no URLs are in memory (e.g. images were already generated on the page beforehand):
+  if (!toPush.length) {
+    const tab = await getActiveTab();
+    if (!tab?.id || !FLOW_PROJECT_RE.test(tab.url || "")) {
+      setStatus("Open your Flow project tab first so we can scan the images.");
+      return;
+    }
+    flowTabId = tab.id;
+    setStatus("Scanning generated images from Flow project…");
+    isPushing = true;
+    pushAllBtn.disabled = true;
+
+    try {
+      const res = await sendToFlowTab({ type: "FLOW_COLLECT_ALL_IMAGES" });
+      if (!res?.ok || !Array.isArray(res.srcs) || !res.srcs.length) {
+        setStatus(res?.error || "No generated images found on the Flow page. Make sure images are visible in the project.");
+        isPushing = false;
+        pushAllBtn.disabled = false;
+        return;
+      }
+
+      const totalImages = res.srcs.length;
+      const totalPrompts = lines.length;
+      log(`Found ${totalImages} image(s) on Flow page for ${totalPrompts} prompt(s).`);
+
+      // Google Flow renders newest at top, oldest at bottom.
+      // Take the newest N images (where N = totalPrompts) and reverse to match prompts 0..N-1:
+      const count = Math.min(totalImages, totalPrompts);
+      const matchedSrcs = res.srcs.slice(0, count).reverse();
+
+      // Ensure promptStatuses is populated
+      if (promptStatuses.length !== totalPrompts) {
+        promptStatuses = lines.map(text => ({ text, status: "pending", url: null }));
+        renderList();
+      }
+
+      for (let i = 0; i < count; i++) {
+        promptStatuses[i].url = matchedSrcs[i];
+        promptStatuses[i].status = "generated";
+        const row = document.getElementById(`pr-${i}`);
+        if (row) paintRow(row, "generated");
+      }
+
+      toPush = promptStatuses
+        .map((item, idx) => ({ item, idx }))
+        .filter(({ item }) => item?.url && item.status !== "done" && item.status !== "saving");
+
+      if (totalImages < totalPrompts) {
+        setStatus(`Found ${totalImages} images for ${totalPrompts} prompts. Pushing available images…`);
+      }
+    } catch (e) {
+      setStatus(`Failed to scan Flow tab: ${e.message || e}`);
+      isPushing = false;
+      pushAllBtn.disabled = false;
+      return;
+    }
+  }
 
   if (!toPush.length) {
-    setStatus("No generated images waiting to be saved.");
+    setStatus("No images ready to push.");
+    isPushing = false;
+    pushAllBtn.disabled = false;
     refreshPushAllButton();
     return;
   }

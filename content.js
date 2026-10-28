@@ -1763,6 +1763,74 @@
     });
   }
 
+  function findResultsScroller() {
+    const img = firstGeneratedImage();
+    let el = img ? img.parentElement : null;
+    while (el && el !== document.body) {
+      const st = getComputedStyle(el);
+      if (/(auto|scroll)/.test(st.overflowY) && el.scrollHeight > el.clientHeight + 20) return el;
+      el = el.parentElement;
+    }
+    const cdkViewport = Array.from(document.querySelectorAll("cdk-virtual-scroll-viewport"))
+      .filter(v => !v.closest(".cdk-overlay-container") && v.scrollHeight > v.clientHeight + 20)[0];
+    if (cdkViewport) return cdkViewport;
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function isWindowScroller(s) {
+    return s === document.scrollingElement || s === document.documentElement || s === document.body;
+  }
+
+  function scrollerMetrics(s) {
+    if (isWindowScroller(s)) {
+      return { top: window.scrollY, height: document.documentElement.scrollHeight, client: window.innerHeight };
+    }
+    return { top: s.scrollTop, height: s.scrollHeight, client: s.clientHeight };
+  }
+
+  function scrollerSet(s, top) {
+    if (isWindowScroller(s)) window.scrollTo(0, top);
+    else s.scrollTop = top;
+  }
+
+  // Scroll the whole grid top→bottom, recording each generated-image src the first time
+  // it is seen. Returns srcs in grid order (top→bottom = newest to oldest in Flow).
+  async function collectAllGeneratedImages(options = {}) {
+    const seen = new Set();
+    const order = [];
+    const allItems = [];
+
+    const record = () => {
+      for (const img of generatedImages()) {
+        const src = img.src;
+        if (src && !seen.has(src)) {
+          seen.add(src);
+          const alt = (img.getAttribute("alt") || "").trim();
+          allItems.push({ src, alt });
+          order.push(src);
+        }
+      }
+    };
+
+    const s = findResultsScroller();
+    scrollerSet(s, 0);
+    await sleep(400);
+    record();
+
+    let guard = 0;
+    while (guard++ < 500) {
+      if (pipelineStopped) break;
+      const m = scrollerMetrics(s);
+      record();
+      if (m.top + m.client >= m.height - 4) { await sleep(300); record(); break; }
+      scrollerSet(s, m.top + Math.max(300, m.client - 140));
+      await sleep(350);
+    }
+    scrollerSet(s, 0);
+    log(`Scan finished: collected ${order.length} generated images.`);
+    return { order, allItems };
+  }
+
   /**
    * Count failure cards in the results grid.
    *
@@ -1833,6 +1901,19 @@
     if (message?.type === "FLOW_LOAD_REFERENCES") {
       loadReferences(message)
         .then((r) => sendResponse(r))
+        .catch((e) => sendResponse({ error: String(e?.message || e) }));
+      return true;
+    }
+
+    if (message?.type === "FLOW_COLLECT_ALL_IMAGES") {
+      pipelineStopped = false;
+      collectAllGeneratedImages(message)
+        .then((result) => sendResponse({
+          ok: true,
+          srcs: result.order,
+          totalFound: result.allItems.length,
+          items: result.allItems
+        }))
         .catch((e) => sendResponse({ error: String(e?.message || e) }));
       return true;
     }

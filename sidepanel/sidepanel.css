@@ -255,6 +255,7 @@ textarea:focus { border-color: var(--line-2); background: var(--surface); }
   white-space: nowrap;
 }
 .tag.s-generating { background: var(--run-soft); color: var(--run); }
+.tag.s-saving     { background: var(--warn-soft); color: var(--warn); }
 .tag.s-done       { background: var(--ok-soft);  color: var(--ok); }
 .tag.s-failed     { background: var(--bad-soft); color: var(--bad); }
 .tag.s-stopped    { color: var(--faint); }

@@ -51,6 +51,9 @@ const hardRefreshBtn   = document.getElementById("hardRefreshBtn");
 const chooseFolderBtn  = document.getElementById("chooseFolderBtn");
 const folderNameEl     = document.getElementById("folderName");
 const destOpts         = Array.from(document.querySelectorAll(".seg__opt[data-dest]"));
+const saveTimingOpts   = Array.from(document.querySelectorAll(".seg__opt[data-save-timing]"));
+const saveTimingHint   = document.getElementById("saveTimingHint");
+const pushAllBtn       = document.getElementById("pushAllBtn");
 const destLocalEl      = document.getElementById("destLocal");
 const destDriveEl      = document.getElementById("destDrive");
 const driveLinkWrap    = document.getElementById("driveLinkWrap");
@@ -112,6 +115,7 @@ function setBusy(busy) {
   txtUploadEl.disabled    = busy;
   chooseFolderBtn.disabled = busy;
   destOpts.forEach(b => { b.disabled = busy; });
+  saveTimingOpts.forEach(b => { b.disabled = busy; });
   driveDisconnect.disabled = busy;
   driveConnectBtn.disabled = busy;
   driveChangeBtn.disabled = busy;
@@ -119,6 +123,7 @@ function setBusy(busy) {
   stopBtn.disabled        = !busy;
   loadRefsBtn.disabled    = busy || refImages.length === 0;
   refreshRunButton();
+  refreshPushAllButton();
 }
 
 function showContinue(fromIndex) {
@@ -267,8 +272,9 @@ let promptStatuses = [];
 const STATUS_LABEL = {
   pending:    "Pending",
   generating: "Generating",
+  generated:  "Ready",
   saving:     "Saving",
-  done:       "Done",
+  done:       "Saved",
   failed:     "Failed",
   stopped:    "Skipped",
 };
@@ -280,14 +286,16 @@ function parsePrompts() {
 function rebuildList() {
   const lines = parsePrompts();
   promptCountEl.textContent = lines.length ? plural(lines.length, "prompt") : "One per line";
-  if (!lines.length) { listSection.hidden = true; promptStatuses = []; return; }
+  if (!lines.length) { listSection.hidden = true; promptStatuses = []; refreshPushAllButton(); return; }
 
   const prev = promptStatuses;
   promptStatuses = lines.map((text, i) => ({
     text,
     status: (prev[i] && prev[i].text === text) ? prev[i].status : "pending",
+    url: (prev[i] && prev[i].text === text) ? prev[i].url : null,
   }));
   renderList();
+  refreshPushAllButton();
 }
 
 function renderList() {
@@ -329,7 +337,13 @@ function paintRow(row, status) {
   row.className = "q-item" + (status === "generating" ? " is-running" : "");
   const tag = row.querySelector(".tag");
   tag.className = `tag s-${status}`;
-  tag.textContent = status === "saving" && saveDest === "drive" ? "Uploading" : (STATUS_LABEL[status] || status);
+  if (status === "saving") {
+    tag.textContent = saveDest === "drive" ? "Uploading" : "Saving";
+  } else if (status === "done") {
+    tag.textContent = saveDest === "drive" ? "Uploaded" : "Saved";
+  } else {
+    tag.textContent = STATUS_LABEL[status] || status;
+  }
 }
 
 function updateStatus(index, status) {
@@ -712,9 +726,132 @@ function setDest(dest, { persist = true } = {}) {
   destDriveEl.hidden = saveDest !== "drive";
   if (persist) chrome.storage.local.set({ nexusSaveDest: saveDest });
   if (saveDest === "drive") initDrive();
+  refreshPushAllButton();
 }
 
 destOpts.forEach(b => b.addEventListener("click", () => setDest(b.dataset.dest)));
+
+// ─────────────────────────────────────────────
+// Save timing: Auto-save immediately vs Push at end
+// ─────────────────────────────────────────────
+let saveTiming = "auto";   // "auto" | "manual"
+
+function setSaveTiming(timing, { persist = true } = {}) {
+  saveTiming = timing === "manual" ? "manual" : "auto";
+  saveTimingOpts.forEach(b => b.setAttribute("aria-checked", String(b.dataset.saveTiming === saveTiming)));
+  if (saveTimingHint) {
+    saveTimingHint.textContent = saveTiming === "auto"
+      ? "Auto-save: saves each image immediately as it finishes generating."
+      : "Push at end: generates all images first, then you review and click Push All.";
+  }
+  if (persist) chrome.storage.local.set({ nexusSaveTiming: saveTiming });
+  refreshPushAllButton();
+}
+
+saveTimingOpts.forEach(b => b.addEventListener("click", () => setSaveTiming(b.dataset.saveTiming)));
+
+// ── Background saver: parallel queue for uploading/saving images ──
+const saveQueue = [];               // [{ idx, url }]
+let savesActive = 0;
+let drainWaiters = [];
+const savesIdle = () => savesActive === 0 && saveQueue.length === 0;
+const drainSaves = () => savesIdle() ? Promise.resolve() : new Promise(r => drainWaiters.push(r));
+const savingCount = () => savesActive + saveQueue.length;
+
+const runSave = async ({ idx, url }) => {
+  const rawText = promptStatuses[idx]?.text || "";
+  const saved = await saveImage(url, idx, rawText);
+  if (saved.ok) {
+    updateStatus(idx, "done");
+  } else {
+    updateStatus(idx, "failed");
+    setStatus(`Prompt ${idx + 1}: ${saved.error}`);
+    if (saved.needsAuth && isRunning) {
+      isRunning = false;
+      setStatus('The Drive uploader script\'s password isn\'t "Nexus". Fix the script, then Continue.');
+      setDriveConn("off", "The uploader script's password isn't \"Nexus\". Fix the script, then Connect again.");
+      showDriveSetup(true);
+    }
+  }
+  refreshPushAllButton();
+};
+
+const pumpSaves = () => {
+  while (savesActive < SAVE_CONCURRENCY && saveQueue.length) {
+    const job = saveQueue.shift();
+    savesActive++;
+    runSave(job).finally(() => {
+      savesActive--;
+      pumpSaves();
+      if (savesIdle()) { const w = drainWaiters; drainWaiters = []; w.forEach(r => r()); }
+    });
+  }
+};
+
+const enqueueSave = (idx, url) => {
+  updateStatus(idx, "saving");
+  saveQueue.push({ idx, url });
+  pumpSaves();
+};
+
+let isPushing = false;
+
+function countUnsavedGenerated() {
+  return promptStatuses.filter(p => p.url && p.status !== "done" && p.status !== "saving").length;
+}
+
+function refreshPushAllButton() {
+  if (!pushAllBtn) return;
+  const count = countUnsavedGenerated();
+  if (count > 0 && !isRunning) {
+    pushAllBtn.hidden = false;
+    const destName = saveDest === "drive" ? "Drive" : "Computer";
+    pushAllBtn.textContent = `Push ${count} to ${destName}`;
+    pushAllBtn.disabled = isPushing;
+  } else {
+    pushAllBtn.hidden = true;
+  }
+}
+
+async function pushAllImages() {
+  if (isPushing || isRunning) return;
+  const destError = await destinationProblem();
+  if (destError) { setStatus(destError); return; }
+
+  const toPush = promptStatuses
+    .map((item, idx) => ({ item, idx }))
+    .filter(({ item }) => item.url && item.status !== "done" && item.status !== "saving");
+
+  if (!toPush.length) {
+    setStatus("No generated images waiting to be saved.");
+    refreshPushAllButton();
+    return;
+  }
+
+  isPushing = true;
+  pushAllBtn.disabled = true;
+  const destName = saveDest === "drive" ? "Drive" : "Computer";
+  const actionName = saveDest === "drive" ? "Uploading" : "Saving";
+  setStatus(`${actionName} ${plural(toPush.length, "image")} to ${destName}…`);
+
+  for (const { idx, item } of toPush) {
+    enqueueSave(idx, item.url);
+  }
+
+  await drainSaves();
+  isPushing = false;
+  refreshPushAllButton();
+
+  const failedCount = promptStatuses.filter(p => p.status === "failed").length;
+  const doneCount   = promptStatuses.filter(p => p.status === "done").length;
+  if (failedCount > 0) {
+    setStatus(`Pushed ${doneCount} images. ${failedCount} failed to save.`);
+  } else {
+    setStatus(`✓ All ${plural(doneCount, "image")} pushed to ${destName}!`);
+  }
+}
+
+if (pushAllBtn) pushAllBtn.addEventListener("click", pushAllImages);
 
 // ── Step 1: connect to the Drive uploader (an Apps Script web app; docs/drive-uploader.gs) ──
 let driveConn = "off";   // "off" | "connecting" | "on"
@@ -963,10 +1100,13 @@ async function startQueue(startIndex = 0) {
 
   // Fresh start resets every status; Continue keeps the finished ones.
   if (startIndex === 0) {
-    promptStatuses = lines.map(text => ({ text, status: "pending" }));
+    promptStatuses = lines.map(text => ({ text, status: "pending", url: null }));
   } else {
     for (let j = startIndex; j < lines.length; j++) {
-      if (promptStatuses[j]) promptStatuses[j].status = "pending";
+      if (promptStatuses[j]) {
+        promptStatuses[j].status = "pending";
+        promptStatuses[j].url = null;
+      }
     }
   }
   renderList();
@@ -992,52 +1132,13 @@ async function startQueue(startIndex = 0) {
   const attempts = new Map();
   let inFlight   = [];                // jobIndexes Flow started, not yet collected
   let finished   = 0;                 // prompts handed to the saver, or finally failed
-
-  // ── Background saver: generation keeps going while finished images upload ──
-  const saveQueue = [];               // [{ idx, url }]
-  let savesActive = 0;
-  let drainWaiters = [];
-  const savesIdle = () => savesActive === 0 && saveQueue.length === 0;
-  const drainSaves = () => savesIdle() ? Promise.resolve() : new Promise(r => drainWaiters.push(r));
-  const savingCount = () => savesActive + saveQueue.length;
-
-  const runSave = async ({ idx, url }) => {
-    const saved = await saveImage(url, idx, lines[idx]);
-    if (saved.ok) {
-      updateStatus(idx, "done");
-      completed++;
-    } else {
-      updateStatus(idx, "failed");
-      setStatus(`Prompt ${idx + 1}: ${saved.error}`);
-      if (saved.needsAuth && isRunning) {
-        // Every later upload would fail the same way; stop so Continue can resume after fixing it.
-        isRunning = false;
-        setStatus('The Drive uploader script\'s password isn\'t "Nexus". Fix the script, then Continue.');
-        setDriveConn("off", "The uploader script's password isn't \"Nexus\". Fix the script, then Connect again.");
-        showDriveSetup(true);
-      }
-    }
-  };
-  const pumpSaves = () => {
-    while (savesActive < SAVE_CONCURRENCY && saveQueue.length) {
-      const job = saveQueue.shift();
-      savesActive++;
-      runSave(job).finally(() => {
-        savesActive--;
-        pumpSaves();
-        if (savesIdle()) { const w = drainWaiters; drainWaiters = []; w.forEach(r => r()); }
-      });
-    }
-  };
-  const enqueueSave = (idx, url) => {
-    updateStatus(idx, "saving");
-    saveQueue.push({ idx, url });
-    pumpSaves();
-  };
   const totalToProcess = total - startIndex;
 
   const failPrompt = (idx, msg) => {
     updateStatus(idx, "failed");
+    finished++;
+    if (msg) setStatus(msg);
+  };
     finished++;
     if (msg) setStatus(msg);
   };
@@ -1111,12 +1212,20 @@ async function startQueue(startIndex = 0) {
       inFlight = inFlight.filter(j => j !== idx);
 
       if (c.done && c.url) {
-        // Hand it to the background saver and go straight back to sending/collecting.
-        enqueueSave(idx, c.url);
-        finished++;
-        const saving = savingCount();
-        setStatus(`${completed} of ${totalToProcess} done · ${inFlight.length} generating` +
-          (saving ? ` · ${saving} ${saveDest === "drive" ? "uploading" : "saving"}` : ""));
+        promptStatuses[idx].url = c.url;
+        if (saveTiming === "manual") {
+          updateStatus(idx, "generated");
+          finished++;
+          completed++;
+          setStatus(`${completed} of ${totalToProcess} generated · ${inFlight.length} in flight`);
+        } else {
+          enqueueSave(idx, c.url);
+          finished++;
+          completed++;
+          const saving = savingCount();
+          setStatus(`${completed} of ${totalToProcess} done · ${inFlight.length} generating` +
+            (saving ? ` · ${saving} ${saveDest === "drive" ? "uploading" : "saving"}` : ""));
+        }
       } else {
         failPrompt(idx, `Prompt ${idx + 1} failed in Flow.`);
       }
@@ -1124,9 +1233,8 @@ async function startQueue(startIndex = 0) {
   } catch (err) {
     setStatus(`Run error: ${err.message || err}`);
   } finally {
-    // Images already generated are still saved, even after Stop. The saver needs the Flow
-    // tab to fetch them, so this comes before ending the pipeline.
-    if (!savesIdle()) {
+    // Images already generated in auto mode are still saved, even after Stop.
+    if (saveTiming !== "manual" && !savesIdle()) {
       setStatus(`Finishing ${plural(savingCount(), saveDest === "drive" ? "upload" : "save")}…`);
       await drainSaves();
     }
@@ -1136,7 +1244,7 @@ async function startQueue(startIndex = 0) {
     if (wasStopped) {
       for (let j = startIndex; j < total; j++) {
         const s = promptStatuses[j]?.status;
-        if (s && s !== "done" && s !== "failed") updateStatus(j, "stopped");
+        if (s && s !== "done" && s !== "failed" && s !== "generated") updateStatus(j, "stopped");
       }
     }
 
@@ -1145,12 +1253,16 @@ async function startQueue(startIndex = 0) {
 
     const failedCount  = promptStatuses.filter(p => p.status === "failed").length;
     const stoppedCount = promptStatuses.filter(p => p.status === "stopped").length;
+    const readyCount   = countUnsavedGenerated();
 
     if (stoppedCount > 0) {
       showContinue(promptStatuses.findIndex(p => p.status === "stopped"));
-      setStatus(`Stopped. ${completed} done, ${stoppedCount} skipped.`);
+      setStatus(`Stopped. ${completed} processed, ${stoppedCount} skipped.`);
     } else if (failedCount > 0) {
-      setStatus(`Finished. ${completed} done, ${failedCount} failed. Use Retry on the failed ones.`);
+      setStatus(`Finished. ${completed} processed, ${failedCount} failed. Use Retry on the failed ones.`);
+    } else if (saveTiming === "manual" && readyCount > 0) {
+      const destName = saveDest === "drive" ? "Drive" : "Computer";
+      setStatus(`✓ All ${plural(readyCount, "image")} generated! Click 'Push ${readyCount} to ${destName}' to save.`);
     } else {
       setStatus(`All ${plural(completed, "image")} generated and saved.`);
     }
@@ -1213,14 +1325,20 @@ async function retryPrompt(index) {
     const c = await sendToFlowTab({ type: "FLOW_COLLECT_NEXT", timeoutMs: COLLECT_TIMEOUT_MS });
 
     if (c?.done && c.url) {
-      const saved = await saveImage(c.url, index, item.text);   // same index → same filename → overwrite
-      if (saved.ok) {
-        updateStatus(index, "done");
-        setStatus(`Prompt ${index + 1} regenerated and replaced.`);
+      item.url = c.url;
+      if (saveTiming === "manual") {
+        updateStatus(index, "generated");
+        setStatus(`✓ Prompt ${index + 1} regenerated (ready to push).`);
       } else {
-        updateStatus(index, "failed");
-        setStatus(`Prompt ${index + 1} regenerated but wasn't saved: ${saved.error}`);
-        if (saved.needsAuth) { setDriveConn("off", "The uploader script's password isn't \"Nexus\". Fix the script, then Connect again."); showDriveSetup(true); }
+        const saved = await saveImage(c.url, index, item.text);   // same index → same filename → overwrite
+        if (saved.ok) {
+          updateStatus(index, "done");
+          setStatus(`✓ Prompt ${index + 1} regenerated and saved.`);
+        } else {
+          updateStatus(index, "failed");
+          setStatus(`Prompt ${index + 1} regenerated but wasn't saved: ${saved.error}`);
+          if (saved.needsAuth) { setDriveConn("off", "The uploader script's password isn't \"Nexus\". Fix the script, then Connect again."); showDriveSetup(true); }
+        }
       }
     } else if (c?.stopped || !isRunning) {
       updateStatus(index, prevStatus);
@@ -1239,10 +1357,11 @@ async function retryPrompt(index) {
 // ─────────────────────────────────────────────
 // Persist / restore (settings and references only; prompts start fresh)
 // ─────────────────────────────────────────────
-chrome.storage.local.get(["nexusNaming", "nexusSaveDest", "nexusDriveLink", "nexusLibrary", "nexusActiveRefs", "nexusRefImages", "nexusRefImage", "nexusRefImageName"], (r) => {
+chrome.storage.local.get(["nexusNaming", "nexusSaveDest", "nexusSaveTiming", "nexusDriveLink", "nexusLibrary", "nexusActiveRefs", "nexusRefImages", "nexusRefImage", "nexusRefImageName"], (r) => {
   if (r.nexusNaming) setNamingMode(r.nexusNaming);
   if (r.nexusDriveLink) driveLinkInput.value = r.nexusDriveLink;
   setDest(r.nexusSaveDest || "local", { persist: false });
+  setSaveTiming(r.nexusSaveTiming || "auto", { persist: false });
   restoreRefs(r);
 });
 

@@ -12,7 +12,7 @@
       <header class="top">
         <img class="top__logo" src="../icons/icon-48.png" width="28" height="28" alt="" decoding="async" />
         <h1 class="top__name">Nexus Flow Pro</h1>
-        <span class="top__version" id="versionTag">v1.1.4</span>
+        <span class="top__version" id="versionTag">v1.1.5</span>
         <div class="top__actions">
           <button type="button" class="icon-btn theme-btn" id="themeBtn" data-mode="system" title="Theme: match system">
             <svg class="i-system" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="currentColor" d="M12 3.8a8.2 8.2 0 0 1 0 16.4z"/></svg>
@@ -172,6 +172,16 @@
             <p class="dlink__msg" id="driveLinkMsg" role="status" aria-live="polite"></p>
           </div>
         </div>
+        <div class="row row--stack">
+          <div class="row__line">
+            <span class="label" id="saveTimingLabel">Save mode</span>
+            <div class="seg" role="radiogroup" aria-labelledby="saveTimingLabel">
+              <button type="button" class="seg__opt" role="radio" aria-checked="true" data-save-timing="auto">Auto-save</button>
+              <button type="button" class="seg__opt" role="radio" aria-checked="false" data-save-timing="manual">Push at end</button>
+            </div>
+          </div>
+          <p class="hint" id="saveTimingHint">Auto-save: saves each image immediately as it finishes generating.</p>
+        </div>
       </section>
 
       <!-- Run -->
@@ -180,6 +190,7 @@
         <div class="run__actions">
           <button type="button" id="run" class="btn btn--primary btn--grow" disabled>Start</button>
           <button type="button" id="continueBtn" class="btn btn--primary btn--grow" hidden>Continue</button>
+          <button type="button" id="pushAllBtn" class="btn btn--secondary btn--grow" hidden>Push All to Drive</button>
           <button type="button" id="stop" class="btn btn--secondary">Stop</button>
         </div>
       </footer>

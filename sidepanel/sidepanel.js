@@ -1139,9 +1139,6 @@ async function startQueue(startIndex = 0) {
     finished++;
     if (msg) setStatus(msg);
   };
-    finished++;
-    if (msg) setStatus(msg);
-  };
 
   try {
     while (isRunning && finished < totalToProcess) {

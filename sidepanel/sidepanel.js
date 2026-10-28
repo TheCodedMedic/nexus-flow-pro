@@ -626,8 +626,17 @@ function fileNameFor(serialNum, rawPromptText) {
   return `${name}.jpg`;
 }
 
+// Content hash of every image saved this session, by prompt index. Used to refuse saving
+// one picture under two prompts' names (which would also overwrite a good file).
+const savedHashes = new Map();   // promptIndex -> sha-256 hex
+
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, "0")).join("");
+}
+
 // Saves one finished image to the chosen destination.
-// Resolves { ok: true } or { ok: false, error, needsAuth }.
+// Resolves { ok: true } or { ok: false, error, needsAuth, duplicateOf }.
 async function saveImage(url, serialNum, rawPromptText) {
   if (!url.startsWith("http") && !url.startsWith("blob:")) {
     let origin = FLOW_BASE;
@@ -640,23 +649,36 @@ async function saveImage(url, serialNum, rawPromptText) {
   const filename = fileNameFor(serialNum, rawPromptText);
 
   try {
+    // Flow's image URLs only load with the page's cookies, so the content script fetches it.
+    const res = await sendToFlowTab({ type: "NEXUS_FETCH_IMAGE", url });
+    if (!res?.base64) return { ok: false, error: res?.error || "Couldn't read the image from Flow." };
+
+    const hash = await sha256Hex(res.base64);
+    for (const [idx, h] of savedHashes) {
+      if (h === hash && idx !== serialNum) {
+        return { ok: false, duplicateOf: idx, error: `Flow returned the same picture as prompt ${idx + 1}, so it wasn't saved. Use Retry.` };
+      }
+    }
+
+    const blob = base64ToBlob(res.base64);
     if (saveDest === "drive") {
-      // Flow's image URLs only load with the page's cookies, so the content script fetches it.
-      const res = await sendToFlowTab({ type: "NEXUS_FETCH_IMAGE", url });
-      if (!res?.base64) return { ok: false, error: res?.error || "Couldn't read the image from Flow." };
-      await Drive.uploadImage(driveFolder, filename, base64ToBlob(res.base64));
+      await Drive.uploadImage(driveFolder, filename, blob);
     } else if (dirHandle) {
-      const res = await sendToFlowTab({ type: "NEXUS_FETCH_IMAGE", url });
-      if (!res?.base64) return { ok: false, error: res?.error || "Couldn't read the image from Flow." };
       const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
       const writable   = await fileHandle.createWritable();
-      await writable.write(base64ToBlob(res.base64));
+      await writable.write(blob);
       await writable.close();
     } else {
       const folder = (downloadFolderEl.value || "nexus-flow").replace(/[/\\]+$/, "");
-      // overwrite so a Retry replaces the existing file instead of making "name (1).jpg"
-      await chrome.downloads.download({ url, filename: `${folder}/${filename}`, saveAs: false, conflictAction: "overwrite" });
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        // overwrite so a Retry replaces the existing file instead of making "name (1).jpg"
+        await chrome.downloads.download({ url: objectUrl, filename: `${folder}/${filename}`, saveAs: false, conflictAction: "overwrite" });
+      } finally {
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      }
     }
+    savedHashes.set(serialNum, hash);
     return { ok: true };
   } catch (e) {
     console.warn("[Nexus Flow] Save failed:", e);
@@ -951,17 +973,28 @@ async function startQueue(startIndex = 0) {
     isRunning = false;
   }
 
-  let submitIdx = startIndex;
-  let inFlight  = [];                 // jobIndexes submitted but not yet collected
-  let collectedCount = 0;
-  const submitFailed = new Set();
+  // Prompts still to send, in order. A prompt Flow didn't start goes to the back of the
+  // queue and is tried again (MAX_SEND_ATTEMPTS in all) before it's marked failed.
+  const MAX_SEND_ATTEMPTS = 3;
+  const queue    = [];
+  for (let j = startIndex; j < total; j++) queue.push(j);
+  const attempts = new Map();
+  let inFlight   = [];                // jobIndexes Flow started, not yet collected
+  let finished   = 0;                 // prompts done or finally failed
   const totalToProcess = total - startIndex;
 
+  const failPrompt = (idx, msg) => {
+    updateStatus(idx, "failed");
+    finished++;
+    if (msg) setStatus(msg);
+  };
+
   try {
-    while (isRunning && (collectedCount + submitFailed.size) < totalToProcess) {
-      // Phase 1: submit until PARALLEL slots are full.
-      while (isRunning && submitIdx < total && inFlight.length < PARALLEL) {
-        const curIdx = submitIdx;
+    while (isRunning && finished < totalToProcess) {
+      // Phase 1: send prompts until PARALLEL generations are running.
+      while (isRunning && queue.length && inFlight.length < PARALLEL) {
+        const curIdx = queue.shift();
+        attempts.set(curIdx, (attempts.get(curIdx) || 0) + 1);
         updateStatus(curIdx, "generating");
         setStatus(`Submitting prompt ${curIdx + 1} of ${total}…`);
 
@@ -976,46 +1009,62 @@ async function startQueue(startIndex = 0) {
 
         if (!isRunning) break;
 
-        if (!res || res.error) {
-          updateStatus(curIdx, "failed");
-          submitFailed.add(curIdx);
-          setStatus(res?.error || `Prompt ${curIdx + 1} couldn't be submitted.`);
+        if (res?.notStarted && attempts.get(curIdx) < MAX_SEND_ATTEMPTS) {
+          // Flow didn't take it (usually busy): try again later instead of guessing.
+          updateStatus(curIdx, "pending");
+          queue.push(curIdx);
+          setStatus(`Flow didn't start prompt ${curIdx + 1}; it will be tried again.`);
+          await sleep(2000);
+        } else if (!res || res.error) {
+          failPrompt(curIdx, res?.error || `Prompt ${curIdx + 1} couldn't be submitted.`);
           // Can't find or fill the prompt box: every later prompt would fail the same way.
           if (res?.error && /prompt field|prompt text/i.test(res.error)) {
-            for (let j = curIdx + 1; j < total; j++) updateStatus(j, "stopped");
+            for (const j of queue) updateStatus(j, "stopped");
             isRunning = false;
             break;
           }
         } else {
           inFlight.push(curIdx);
         }
-        submitIdx++;
 
-        if (isRunning && submitIdx < total && inFlight.length < PARALLEL) await sleep(SUBMIT_DELAY_MS);
+        if (isRunning && queue.length && inFlight.length < PARALLEL) await sleep(SUBMIT_DELAY_MS);
       }
 
-      if (!isRunning || !inFlight.length) break;
+      if (!isRunning || !inFlight.length) {
+        if (isRunning && queue.length) continue;   // only re-queued prompts left: send them
+        break;
+      }
 
       // Phase 2: collect whichever generation finishes next.
       setStatus(`Waiting for results… ${inFlight.length} generating`);
       const c = await sendToFlowTab({ type: "FLOW_COLLECT_NEXT", timeoutMs: COLLECT_TIMEOUT_MS });
       if (!isRunning) break;
+      if (c?.stopped) break;
 
-      // The content script tags each result with the prompt whose tile produced it.
-      let idx = (typeof c?.jobIndex === "number") ? c.jobIndex : null;
-      if (idx === null || !inFlight.includes(idx)) idx = inFlight[0];
+      if (c?.timeout) {
+        // Nothing finished for a long time: give up on the prompt that has waited longest.
+        const idx = inFlight.shift();
+        failPrompt(idx, `Prompt ${idx + 1} timed out.`);
+        continue;
+      }
+
+      // Each result is tagged with the prompt whose card produced it. Anything that can't be
+      // matched to a prompt still waiting is ignored: guessing is how pictures ended up
+      // saved under the wrong timestamps.
+      const idx = typeof c?.jobIndex === "number" ? c.jobIndex : null;
+      if (idx === null || !inFlight.includes(idx)) continue;
       inFlight = inFlight.filter(j => j !== idx);
 
-      if (c?.done && c.url) {
+      if (c.done && c.url) {
         setStatus(saveDest === "drive" ? `Uploading prompt ${idx + 1} to Drive…` : `Saving prompt ${idx + 1}…`);
         const saved = await saveImage(c.url, idx, lines[idx]);
         if (saved.ok) {
           updateStatus(idx, "done");
           completed++;
+          finished++;
           setStatus(`${completed} of ${totalToProcess} done · ${inFlight.length} generating`);
         } else {
-          updateStatus(idx, "failed");
-          setStatus(`Prompt ${idx + 1} generated but wasn't saved: ${saved.error}`);
+          failPrompt(idx, `Prompt ${idx + 1}: ${saved.error}`);
           if (saved.needsAuth) {
             // Every later upload would fail the same way; stop so Continue can resume after reconnecting.
             isRunning = false;
@@ -1024,15 +1073,9 @@ async function startQueue(startIndex = 0) {
             showDriveSetup(true);
           }
         }
-      } else if (c?.stopped || !isRunning) {
-        break;
       } else {
-        // Not added to submitFailed: collectedCount below already accounts for this job,
-        // and counting it twice ended the loop with prompts still generating.
-        updateStatus(idx, "failed");
-        setStatus(`Prompt ${idx + 1} failed.`);
+        failPrompt(idx, `Prompt ${idx + 1} failed in Flow.`);
       }
-      collectedCount++;
     }
   } catch (err) {
     setStatus(`Run error: ${err.message || err}`);
@@ -1111,6 +1154,7 @@ async function retryPrompt(index) {
       charDelayMs: CHAR_DELAY_MS,
       refImages: refImages.map(r => r.base64),
       refNames: refImages.map(projectNameOf),
+      jobIndex: index,   // results are only ever matched to the prompt that produced them
     });
     if (!isRunning) { updateStatus(index, prevStatus); return; }
     if (!sub || sub.error) { setStatus(sub?.error || "Retry couldn't be submitted."); updateStatus(index, "failed"); return; }

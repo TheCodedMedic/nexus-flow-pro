@@ -19,6 +19,19 @@
     return new Promise((r) => setTimeout(r, ms));
   }
 
+  // Resolve as soon as `check()` returns something truthy (polled every `everyMs`), or with
+  // null after `timeoutMs`. Used instead of fixed pauses so each step moves on the moment
+  // Flow is ready.
+  async function waitFor(check, timeoutMs, everyMs = 80) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const v = check();
+      if (v) return v;
+      if (pipelineStopped || Date.now() >= deadline) return null;
+      await sleep(everyMs);
+    }
+  }
+
   /**
    * Result-grid images.
    *
@@ -371,7 +384,7 @@
     document.body.dispatchEvent(mk());
     const active = document.activeElement;
     if (active && active !== document.body) active.dispatchEvent(mk());
-    await sleep(250);
+    await sleep(100);
   }
 
   // The current Flow build renders the ingredients picker as an Angular CDK overlay
@@ -450,8 +463,7 @@
       if (searchTrigger) {
         log("Revealing the picker's search box.");
         searchTrigger.click();
-        await sleep(400);
-        input = findInput();
+        input = await waitFor(() => { const i = findInput(); return i && isVisible(i) ? i : null; }, 1500, 50);
       }
     }
 
@@ -459,13 +471,12 @@
     const term = query || name;
     input.focus();
     setFrameworkInputValue(input, "");          // clear any residual filter first
-    await sleep(120);
+    await sleep(30);
     setFrameworkInputValue(input, term);
     // Some search boxes only react to key events — nudge them too.
     input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: term.slice(-1) }));
     log(`Typed '${term}' into asset search to filter the list.`);
-    await sleep(1000);  // let the filtered list re-render
-    return true;
+    return true;   // the caller polls for the filtered row, so no fixed pause here
   }
 
   // Fallback for when there is no search box: scroll the virtualized list looking for
@@ -493,17 +504,13 @@
 
   // Click the "Add to Prompt" button at the bottom of the picker dialog.
   async function clickAddToPrompt() {
-    for (let i = 0; i < 12; i++) {
-      const btn = Array.from(document.querySelectorAll('button, [role="button"]'))
-        .find(b => isVisible(b) && /add to prompt/i.test(b.textContent));
-      if (btn && !btn.disabled && btn.getAttribute("aria-disabled") !== "true") {
-        btn.click();
-        log("Clicked 'Add to Prompt'.");
-        return true;
-      }
-      await sleep(400);
-    }
-    return false;
+    const btn = await waitFor(() => Array.from(document.querySelectorAll('button, [role="button"]'))
+      .find(b => isVisible(b) && /add to prompt/i.test(b.textContent) &&
+                 !b.disabled && b.getAttribute("aria-disabled") !== "true"), 3000, 60);
+    if (!btn) return false;
+    btn.click();
+    log("Clicked 'Add to Prompt'.");
+    return true;
   }
 
   // Is `name` currently attached to the prompt bar as an ingredient?
@@ -533,14 +540,8 @@
 
   // Poll until the ingredient chip shows up, so an attach is CONFIRMED by the page rather
   // than inferred from the fact that we clicked something.
-  async function waitForReferenceAttached(name, timeoutMs = 4000) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (pipelineStopped) return false;
-      if (isReferenceAttached(name)) return true;
-      await sleep(250);
-    }
-    return false;
+  async function waitForReferenceAttached(name, timeoutMs = 3000) {
+    return !!(await waitFor(() => isReferenceAttached(name), timeoutMs, 60));
   }
 
   // Select the existing reference.png from the project and attach it.
@@ -553,10 +554,7 @@
   // `confirmed` says "the reference is really on this prompt".
   async function selectExistingReference(name) {
     // Give the picker's list a moment to populate before searching.
-    for (let i = 0; i < 8; i++) {
-      if (getPickerPanel()?.querySelector('[role="option"]')) break;
-      await sleep(250);
-    }
+    await waitFor(() => getPickerPanel()?.querySelector('[role="option"]'), 2000, 50);
 
     let opt = findReferenceOption(name);
 
@@ -568,12 +566,8 @@
     for (const q of queries) {
       if (opt || pipelineStopped) break;
       if (await searchPickerForReference(name, q)) {
-        for (let i = 0; i < 8; i++) {      // up to ~3s for the filtered list to render
-          if (pipelineStopped) return { clicked: false, confirmed: false };
-          opt = findReferenceOption(name);
-          if (opt) break;
-          await sleep(400);
-        }
+        opt = await waitFor(() => findReferenceOption(name), 3000, 60);   // filtered list re-render
+        if (pipelineStopped) return { clicked: false, confirmed: false };
       }
     }
 
@@ -586,12 +580,10 @@
     if (!opt) return { clicked: false, confirmed: false };
     log(`Found existing ${name} in project — selecting it.`);
     opt.click();                       // selecting the option attaches it as an ingredient
-    await sleep(500);
     // "Add to Prompt" is best-effort: some flows attach on click alone, and the button
     // can disappear once the asset is added. Either way we must NOT search again — the
     // asset has left the list, and re-searching it is exactly what used to hang.
-    await clickAddToPrompt();
-    await sleep(300);
+    if (!isReferenceAttached(name)) await clickAddToPrompt();
 
     // Confirm against the page instead of assuming the click landed.
     const confirmed = await waitForReferenceAttached(name);
@@ -607,12 +599,8 @@
   async function openPickerAndWait() {
     if (pipelineStopped) return false;
     if (!(await openAssetPicker())) return false;
-    for (let k = 0; k < 10; k++) {        // up to 4s for the dialog to appear
-      if (pipelineStopped) return false;
-      await sleep(400);
-      if (getPickerPanel()) return true;
-    }
-    warn("Asset picker dialog did not open.");
+    if (await waitFor(() => getPickerPanel(), 4000, 50)) return true;
+    if (!pipelineStopped) warn("Asset picker dialog did not open.");
     return false;
   }
 
@@ -683,8 +671,7 @@
       // into the list yet, so give Flow a beat and take one more look.
       if (!clicked && attempt === 1 && !pipelineStopped) {
         log(`${name} not in the picker yet — waiting for Flow to release it, then retrying once.`);
-        await sleep(2500);
-        if (isReferenceAttached(name)) { clicked = confirmed = true; break; }
+        if (await waitFor(() => isReferenceAttached(name), 1500, 100)) { clicked = confirmed = true; break; }
       }
     }
 
@@ -694,7 +681,6 @@
 
     if (clicked && confirmed) {
       log(`Attached existing ${name} (confirmed on the prompt bar).`);
-      await sleep(500);
       return true;
     }
     if (clicked) {
@@ -703,7 +689,6 @@
       // before confirmation existed — so an undetectable chip degrades to the old
       // working behaviour instead of costing a generation.
       warn(`Clicked ${name} but couldn't confirm the chip on the prompt bar — proceeding anyway.`);
-      await sleep(500);
       return true;
     }
     warn(`${name} never appeared in the picker — this prompt has no reference attached.`);
@@ -1239,10 +1224,15 @@
   // which order the generations finish in.
   let pipelineJobTiles       = new Map();   // jobIndex -> tileId
   let pipelineResolvedTiles  = new Set();   // tileIds already pushed to the finished queue
-  // Every tile that belongs to someone: tiles present before the run, each job's own tile,
-  // and any extra tiles a submission produced. A new submission may only claim a tile that
-  // is in none of these, so a late or extra card can never be credited to the wrong prompt.
-  let pipelineClaimedTiles   = new Set();
+  // Cards are matched to prompts by POSITION, not by a mark on the element: Flow replaces a
+  // card's element after it appears (e.g. once the server confirms it), which drops any
+  // attribute we set, and the old approach then lost the card or handed it to the next
+  // prompt. Flow lists newest first and makes one card per send ("x1"), so this run's cards,
+  // newest first, line up with pipelineSlots in reverse: the Nth newest card is the Nth most
+  // recent slot. A slot is a sent prompt ({ jobIndex }) or an unexpected extra card ({ null }).
+  let pipelineSlots          = [];          // [{ jobIndex|null, tileId }] in send order
+  let pipelineBaselineIds    = new Set();   // card ids present before the run
+  let pipelineBaselineSrcs   = new Set();   // image srcs present before the run
 
   // Flow's current build gives result tiles no stable identifier of its own — the wrapper
   // is <flow-tile-container> carrying only Angular's _ngcontent/_nghost markers. So we
@@ -1252,9 +1242,13 @@
   const NEXUS_TILE_ATTR = "data-nexus-tile-id";
   let nexusTileCounter = 0;
 
+  const TILE_SELECTOR = "flow-tile-container, flow-error-tile, [data-tile-id]";
+
+  // Result cards in page order (newest first). A card nested inside another card (an error
+  // tile inside its container) is counted once.
   function tileElements() {
-    return Array.from(document.querySelectorAll("flow-tile-container, flow-error-tile, [data-tile-id]"))
-      .filter(el => !el.closest(".cdk-overlay-container"));
+    return Array.from(document.querySelectorAll(TILE_SELECTOR))
+      .filter(el => !el.closest(".cdk-overlay-container") && !el.parentElement?.closest(TILE_SELECTOR));
   }
 
   function tileIdOf(el) {
@@ -1281,18 +1275,51 @@
     return ids;
   }
 
-  // Poll for a tile that is neither in `knownIds` nor already claimed by a job — this is the
-  // placeholder card Flow inserts right after a submit (observed ~800ms), well before its image.
-  async function waitForNewTile(knownIds, timeoutMs) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (pipelineStopped) return null;
-      for (const id of getAllTileIds()) {
-        if (!knownIds.has(id) && !pipelineClaimedTiles.has(id)) return id;
-      }
-      await sleep(250);
+  // Was this card on the page before the run? Checked by its mark, or, if Flow has redrawn
+  // it since, by its image.
+  function isBaselineTile(el) {
+    const id = el.getAttribute(NEXUS_TILE_ATTR) || el.getAttribute("data-tile-id");
+    if (id && pipelineBaselineIds.has(id)) return true;
+    const img = firstGeneratedImage(el);
+    return !!(img && img.src && pipelineBaselineSrcs.has(img.src));
+  }
+
+  // This run's cards, newest first.
+  function runTiles() {
+    return tileElements().filter(el => !isBaselineTile(el));
+  }
+
+  // Put each slot's mark back on the card in its position, so a card Flow has redrawn is
+  // still found. Only done when the count matches exactly; otherwise positions are
+  // uncertain and nothing is moved.
+  function restampRunTiles() {
+    const tiles = runTiles();
+    if (tiles.length !== pipelineSlots.length) return false;
+    // Cross-check: a card that still carries a slot's mark must be in that slot's position.
+    // If not, the order isn't what we think (e.g. an older card was redrawn), so move nothing.
+    const slotIds = new Set(pipelineSlots.map(sl => sl.tileId));
+    const consistent = tiles.every((el, i) => {
+      const mark = el.getAttribute(NEXUS_TILE_ATTR);
+      return !mark || !slotIds.has(mark) || mark === pipelineSlots[pipelineSlots.length - 1 - i].tileId;
+    });
+    if (!consistent) return false;
+    tiles.forEach((el, i) => {
+      const slot = pipelineSlots[pipelineSlots.length - 1 - i];
+      if (el.getAttribute(NEXUS_TILE_ATTR) !== slot.tileId) el.setAttribute(NEXUS_TILE_ATTR, slot.tileId);
+    });
+    return true;
+  }
+
+  // Cards nobody sent (a late card from a prompt that was given up on, or an extra output)
+  // are recorded as empty slots so positions stay lined up. Returns how many were added.
+  function absorbUnexpectedTiles() {
+    let added = 0;
+    while (runTiles().length > pipelineSlots.length) {
+      pipelineSlots.push({ jobIndex: null, tileId: `nexus-extra-${++nexusTileCounter}` });
+      added++;
     }
-    return null;
+    if (added) { restampRunTiles(); log(`Pipeline: ${added} card(s) not from our prompts — ignored.`); }
+    return added;
   }
 
   /**
@@ -1327,6 +1354,7 @@
   // tracked tile produced it (via pipelineJobTiles), so out-of-order completion — e.g. the
   // 6th prompt's generation finishing before the 3rd's — no longer mislabels the file.
   function scanPipeline() {
+    restampRunTiles();
     for (const [jobIndex, tileId] of pipelineJobTiles.entries()) {
       if (pipelineResolvedTiles.has(tileId)) continue;
       const tileEl = tileElementById(tileId);
@@ -1431,60 +1459,46 @@
       if (ed) { await submitViaEnter(ed); log("Pipeline: sent Enter."); }
     };
 
-    // Snapshot tiles right before sending: the generation this submit starts is the first
-    // tile that is new and not already claimed by another job.
-    const tileBaseline = getAllTileIds();
+    // Account for any card that turned up since the last send, so this prompt's card is
+    // exactly the next one.
+    absorbUnexpectedTiles();
+    const before = pipelineSlots.length;
+    const newCardShown = (ms) => waitFor(() => runTiles().length > before, ms, 100);
+
     await send();
-    let tileId = await waitForNewTile(tileBaseline, 8000);
+    let shown = await newCardShown(6000);
 
-    // No new card. Send again only if the prompt is still sitting in the box (Flow didn't
-    // take it, e.g. too many generations running). If the box was cleared, Flow took it and
-    // a second send would start a duplicate.
-    for (let attempt = 0; !tileId && attempt < 2 && !pipelineStopped && promptStillInBox(); attempt++) {
+    // No card and the prompt is still in the box: Flow didn't take it (e.g. busy). Send again
+    // (twice at most). If the box was cleared, Flow took it, so never send it twice.
+    for (let attempt = 0; !shown && attempt < 2 && !pipelineStopped && promptStillInBox(); attempt++) {
       warn(`Pipeline: no new card and the prompt is still in the box; sending again (${attempt + 1}/2).`);
-      await sleep(2000);
+      await sleep(1500);
       await send();
-      tileId = await waitForNewTile(tileBaseline, 8000);
+      shown = await newCardShown(6000);
     }
+    // Box cleared but no card yet: give a slow card a little longer.
+    if (!shown && !pipelineStopped && !promptStillInBox()) shown = await newCardShown(4000);
     if (pipelineStopped) return { stopped: true };
 
-    // The box was cleared but no card yet: give a slow card a little longer before deciding.
-    if (!tileId && !pipelineStopped && !promptStillInBox()) {
-      tileId = await waitForNewTile(tileBaseline, 5000);
-    }
-    if (pipelineStopped) return { stopped: true };
-
-    if (!tileId) {
+    if (!shown) {
       // No card means no generation, even if Flow cleared the box (it does that when it
-      // silently drops a prompt while busy). Report it so the panel sends it again, rather
-      // than waiting for a picture that will never come.
+      // silently drops a prompt while busy). Report it so the panel sends it again.
       const ed = liveEditor(input);
       if (ed && promptStillInBox()) { await focusEditorLikeUser(ed); await clearEditorContent(ed); }
       return { error: "Flow didn't start a generation for this prompt (it may be busy).", notStarted: true };
     }
 
-    pipelineClaimedTiles.add(tileId);
-    if (typeof payload.jobIndex === "number") {
-      pipelineJobTiles.set(payload.jobIndex, tileId);
-      log(`Pipeline: job ${payload.jobIndex} -> tile ${tileId}`);
+    // Our card is the oldest of the cards that appeared since `before`; anything newer that
+    // arrived at the same moment is an extra output and gets an empty slot.
+    const tileId = `nexus-job-${++nexusTileCounter}`;
+    const jobIndex = typeof payload.jobIndex === "number" ? payload.jobIndex : null;
+    pipelineSlots.push({ jobIndex, tileId });
+    absorbUnexpectedTiles();
+    restampRunTiles();
+    if (jobIndex !== null) {
+      pipelineJobTiles.set(jobIndex, tileId);
+      log(`Pipeline: job ${jobIndex} -> card ${tileId}`);
     }
-
-    // Claim any further cards this same submission produces (several outputs per prompt,
-    // or a duplicate start) so the next prompt can't pick one of them up as its own.
-    const extrasUntil = Date.now() + 1500;
-    while (Date.now() < extrasUntil && !pipelineStopped) {
-      for (const id of getAllTileIds()) {
-        if (!tileBaseline.has(id) && !pipelineClaimedTiles.has(id)) {
-          pipelineClaimedTiles.add(id);
-          log(`Pipeline: extra card ${id} from the same submission — ignored.`);
-        }
-      }
-      await sleep(250);
-    }
-
-    // Let Flow clear the prompt box before the next prompt is typed, so a late clear can't
-    // wipe the next prompt's text.
-    for (let i = 0; i < 15 && promptStillInBox() && !pipelineStopped; i++) await sleep(200);
 
     return { ok: true };
   }
@@ -1615,7 +1629,9 @@
       pipelineStopped       = false;
       pipelineJobTiles      = new Map();
       pipelineResolvedTiles = new Set();
-      pipelineClaimedTiles  = getAllTileIds();   // everything already on the page belongs to earlier work
+      pipelineSlots         = [];
+      pipelineBaselineIds   = getAllTileIds();   // everything already on the page belongs to earlier work
+      pipelineBaselineSrcs  = new Set(pipelineSeenSrcs);
       stopPipelineScanning();
       pipelineScanInterval = setInterval(scanPipeline, 700);
       pipelineObserver = new MutationObserver(scanPipeline);

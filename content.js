@@ -1450,7 +1450,7 @@
 
     // The box was cleared but no card yet: give a slow card a little longer before deciding.
     if (!tileId && !pipelineStopped && !promptStillInBox()) {
-      tileId = await waitForNewTile(tileBaseline, 8000);
+      tileId = await waitForNewTile(tileBaseline, 5000);
     }
     if (pipelineStopped) return { stopped: true };
 

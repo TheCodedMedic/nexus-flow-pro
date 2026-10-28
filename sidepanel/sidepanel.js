@@ -1014,7 +1014,7 @@ async function startQueue(startIndex = 0) {
           updateStatus(curIdx, "pending");
           queue.push(curIdx);
           setStatus(`Flow didn't start prompt ${curIdx + 1}; it will be tried again.`);
-          await sleep(3000);
+          await sleep(2000);
         } else if (!res || res.error) {
           failPrompt(curIdx, res?.error || `Prompt ${curIdx + 1} couldn't be submitted.`);
           // Can't find or fill the prompt box: every later prompt would fail the same way.

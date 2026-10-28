@@ -2,6 +2,9 @@
 const PARALLEL        = 8;
 const SUBMIT_DELAY_MS = 1000;
 const COLLECT_TIMEOUT_MS = 180000;
+// Finished images are saved/uploaded in the background, this many at a time, so sending
+// prompts never waits on Drive or the disk.
+const SAVE_CONCURRENCY = 3;
 const CHAR_DELAY_MS   = 30;
 
 // Reference images. Every image ever added lives in the library; the ones in use (up to
@@ -264,6 +267,7 @@ let promptStatuses = [];
 const STATUS_LABEL = {
   pending:    "Pending",
   generating: "Generating",
+  saving:     "Saving",
   done:       "Done",
   failed:     "Failed",
   stopped:    "Skipped",
@@ -325,7 +329,7 @@ function paintRow(row, status) {
   row.className = "q-item" + (status === "generating" ? " is-running" : "");
   const tag = row.querySelector(".tag");
   tag.className = `tag s-${status}`;
-  tag.textContent = STATUS_LABEL[status] || status;
+  tag.textContent = status === "saving" && saveDest === "drive" ? "Uploading" : (STATUS_LABEL[status] || status);
 }
 
 function updateStatus(index, status) {
@@ -647,6 +651,7 @@ async function saveImage(url, serialNum, rawPromptText) {
     url = origin + url;
   }
   const filename = fileNameFor(serialNum, rawPromptText);
+  let reserved = null;
 
   try {
     // Flow's image URLs only load with the page's cookies, so the content script fetches it.
@@ -659,6 +664,10 @@ async function saveImage(url, serialNum, rawPromptText) {
         return { ok: false, duplicateOf: idx, error: `Flow returned the same picture as prompt ${idx + 1}, so it wasn't saved. Use Retry.` };
       }
     }
+    // Reserve it now: saves run in parallel, and a second identical picture must not pass the
+    // check above while this one is still uploading. Released again if the save fails.
+    reserved = { previous: savedHashes.get(serialNum) };
+    savedHashes.set(serialNum, hash);
 
     const blob = base64ToBlob(res.base64);
     if (saveDest === "drive") {
@@ -678,9 +687,11 @@ async function saveImage(url, serialNum, rawPromptText) {
         setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
       }
     }
-    savedHashes.set(serialNum, hash);
     return { ok: true };
   } catch (e) {
+    if (reserved) {
+      if (reserved.previous) savedHashes.set(serialNum, reserved.previous); else savedHashes.delete(serialNum);
+    }
     console.warn("[Nexus Flow] Save failed:", e);
     return { ok: false, error: String(e?.message || e), needsAuth: e instanceof Drive.NeedsAuthError };
   }
@@ -980,7 +991,49 @@ async function startQueue(startIndex = 0) {
   for (let j = startIndex; j < total; j++) queue.push(j);
   const attempts = new Map();
   let inFlight   = [];                // jobIndexes Flow started, not yet collected
-  let finished   = 0;                 // prompts done or finally failed
+  let finished   = 0;                 // prompts handed to the saver, or finally failed
+
+  // ── Background saver: generation keeps going while finished images upload ──
+  const saveQueue = [];               // [{ idx, url }]
+  let savesActive = 0;
+  let drainWaiters = [];
+  const savesIdle = () => savesActive === 0 && saveQueue.length === 0;
+  const drainSaves = () => savesIdle() ? Promise.resolve() : new Promise(r => drainWaiters.push(r));
+  const savingCount = () => savesActive + saveQueue.length;
+
+  const runSave = async ({ idx, url }) => {
+    const saved = await saveImage(url, idx, lines[idx]);
+    if (saved.ok) {
+      updateStatus(idx, "done");
+      completed++;
+    } else {
+      updateStatus(idx, "failed");
+      setStatus(`Prompt ${idx + 1}: ${saved.error}`);
+      if (saved.needsAuth && isRunning) {
+        // Every later upload would fail the same way; stop so Continue can resume after fixing it.
+        isRunning = false;
+        setStatus('The Drive uploader script\'s password isn\'t "Nexus". Fix the script, then Continue.');
+        setDriveConn("off", "The uploader script's password isn't \"Nexus\". Fix the script, then Connect again.");
+        showDriveSetup(true);
+      }
+    }
+  };
+  const pumpSaves = () => {
+    while (savesActive < SAVE_CONCURRENCY && saveQueue.length) {
+      const job = saveQueue.shift();
+      savesActive++;
+      runSave(job).finally(() => {
+        savesActive--;
+        pumpSaves();
+        if (savesIdle()) { const w = drainWaiters; drainWaiters = []; w.forEach(r => r()); }
+      });
+    }
+  };
+  const enqueueSave = (idx, url) => {
+    updateStatus(idx, "saving");
+    saveQueue.push({ idx, url });
+    pumpSaves();
+  };
   const totalToProcess = total - startIndex;
 
   const failPrompt = (idx, msg) => {
@@ -1056,23 +1109,12 @@ async function startQueue(startIndex = 0) {
       inFlight = inFlight.filter(j => j !== idx);
 
       if (c.done && c.url) {
-        setStatus(saveDest === "drive" ? `Uploading prompt ${idx + 1} to Drive…` : `Saving prompt ${idx + 1}…`);
-        const saved = await saveImage(c.url, idx, lines[idx]);
-        if (saved.ok) {
-          updateStatus(idx, "done");
-          completed++;
-          finished++;
-          setStatus(`${completed} of ${totalToProcess} done · ${inFlight.length} generating`);
-        } else {
-          failPrompt(idx, `Prompt ${idx + 1}: ${saved.error}`);
-          if (saved.needsAuth) {
-            // Every later upload would fail the same way; stop so Continue can resume after reconnecting.
-            isRunning = false;
-            setStatus('The Drive uploader script\'s password isn\'t "Nexus". Fix the script, then Continue.');
-            setDriveConn("off", "The uploader script's password isn't \"Nexus\". Fix the script, then Connect again.");
-            showDriveSetup(true);
-          }
-        }
+        // Hand it to the background saver and go straight back to sending/collecting.
+        enqueueSave(idx, c.url);
+        finished++;
+        const saving = savingCount();
+        setStatus(`${completed} of ${totalToProcess} done · ${inFlight.length} generating` +
+          (saving ? ` · ${saving} ${saveDest === "drive" ? "uploading" : "saving"}` : ""));
       } else {
         failPrompt(idx, `Prompt ${idx + 1} failed in Flow.`);
       }
@@ -1080,6 +1122,12 @@ async function startQueue(startIndex = 0) {
   } catch (err) {
     setStatus(`Run error: ${err.message || err}`);
   } finally {
+    // Images already generated are still saved, even after Stop. The saver needs the Flow
+    // tab to fetch them, so this comes before ending the pipeline.
+    if (!savesIdle()) {
+      setStatus(`Finishing ${plural(savingCount(), saveDest === "drive" ? "upload" : "save")}…`);
+      await drainSaves();
+    }
     await sendToFlowTab({ type: "FLOW_PIPELINE_END" });
 
     const wasStopped = !isRunning;

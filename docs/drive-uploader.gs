@@ -29,12 +29,15 @@ function doPost(e) {
 
       case "upload": {
         const folder = openFolder(req);
-        // Same name already there (e.g. a Retry): replace it instead of keeping two copies.
-        const existing = folder.getFilesByName(req.name);
-        while (existing.hasNext()) existing.next().setTrashed(true);
         const blob = Utilities.newBlob(Utilities.base64Decode(req.data), req.mimeType || "image/jpeg", req.name);
-        const file = folder.createFile(blob);
-        return reply({ ok: true, id: file.getId() });
+        // Same name already there (e.g. a Retry): replace it instead of keeping two copies.
+        // Google only lets the account that owns a file bin it, so if someone else's upload
+        // has this name, leave theirs alone and save this one under a free name instead.
+        let name = req.name;
+        if (!trashSameName(folder, name)) name = freeName(folder, name);
+        blob.setName(name);
+        const file = withRetry(function () { return folder.createFile(blob); });
+        return reply({ ok: true, id: file.getId(), name: name });
       }
 
       default:
@@ -52,6 +55,48 @@ function openFolder(req) {
       : DriveApp.getFolderById(req.folderId);
   } catch (err) {
     throw new Error("Can't open that folder. Check the link, and that it's shared as “Anyone with the link: Editor” (or with the uploading account).");
+  }
+}
+
+// Bin every file called `name` that this account may bin. False if one is left behind.
+function trashSameName(folder, name) {
+  let allGone = true;
+  const files = withRetry(function () { return folder.getFilesByName(name); });
+  while (files.hasNext()) {
+    const f = files.next();
+    try { f.setTrashed(true); } catch (err) { allGone = false; }
+  }
+  return allGone;
+}
+
+// "001-name.jpg" -> "001-name (2).jpg", the first one not already in the folder.
+function freeName(folder, name) {
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : "";
+  for (let n = 2; n < 1000; n++) {
+    const candidate = stem + " (" + n + ")" + ext;
+    if (!folder.getFilesByName(candidate).hasNext()) return candidate;
+  }
+  return stem + " (" + Date.now() + ")" + ext;
+}
+
+// Drive sometimes refuses a call for a moment when several uploads land at once
+// ("Access denied: DriveApp", "Service error"). Wait and try again before giving up.
+function withRetry(fn) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return fn();
+    } catch (err) {
+      if (attempt >= 4) {
+        if (/access denied/i.test(String(err && err.message || err))) {
+          throw new Error("Google Drive refused the upload. Check the folder is shared with " +
+            Session.getEffectiveUser().getEmail() + " as Editor (or “Anyone with the link: Editor”).");
+        }
+        throw err;
+      }
+      Utilities.sleep(500 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 300));
+    }
   }
 }
 

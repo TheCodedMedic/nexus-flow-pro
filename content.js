@@ -66,8 +66,14 @@
     if (img.src.startsWith("data:image/svg") || img.src.includes("avatar")) return false;
     if (img.matches('.asset-thumbnail-image, .detail-preview-image')) return false;
 
-    // If inside a tile container, it's definitely a generated image
-    if (img.closest('flow-tile-container, flow-image-tile, flow-media-tile, [data-tile-id]')) return true;
+    // A tile labelled with one of our reference file names is an uploaded reference.
+    const tile = img.closest('flow-tile-container, flow-image-tile, flow-media-tile, [data-tile-id]');
+    if (tile) {
+      const label = `${img.getAttribute("title") || ""} ${tile.getAttribute("aria-label") || ""} ${tile.getAttribute("title") || ""} ${tile.textContent || ""}`;
+      if (/\bref-[0-9a-f]{8}\.png\b/i.test(label)) return false;
+      // Otherwise a tile image is a generated image
+      return true;
+    }
     if (img.matches('img[alt="Tile displaying a user\'s image"], img[alt="Generated image"]')) return true;
 
     return false;

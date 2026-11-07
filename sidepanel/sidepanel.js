@@ -656,24 +656,95 @@ async function sha256Hex(text) {
   return Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, "0")).join("");
 }
 
+async function absoluteFlowUrl(url) {
+  if (url.startsWith("http") || url.startsWith("blob:")) return url;
+  let origin = FLOW_BASE;
+  try {
+    const activeUrl = (await getActiveTab())?.url;
+    if (activeUrl) origin = new URL(activeUrl).origin;
+  } catch { /* fall back to FLOW_BASE */ }
+  return origin + url;
+}
+
+// Images the push scan already downloaded (to check them against the references), so
+// saving them doesn't download them again. Emptied as each one is saved.
+const fetchedImages = new Map();   // Flow url -> data URL
+
+// Flow's image URLs only load with the page's cookies, so the content script fetches them.
+async function fetchFlowImage(url) {
+  if (fetchedImages.has(url)) return fetchedImages.get(url);
+  const res = await sendToFlowTab({ type: "NEXUS_FETCH_IMAGE", url: await absoluteFlowUrl(url) });
+  if (!res?.base64) throw new Error(res?.error || "Couldn't read the image from Flow.");
+  return res.base64;
+}
+
+// ── Telling character references apart from generated images ──
+// Flow shows uploaded references in the same grid as generated images, and a tile doesn't
+// reliably say which it is. So compare the pictures: shrink both to a small colour thumbnail
+// and correlate them. Flow re-encoding or resizing an upload keeps that near 1; a different
+// picture, even one with the same character in it, falls well short.
+const REF_MATCH_MIN = 0.98;
+const THUMB = 24;
+const refPrints = new Map();            // library id -> thumbnail fingerprint
+
+async function picturePrint(dataUrl) {
+  const bmp = await createImageBitmap(base64ToBlob(dataUrl));
+  // Shrink in two steps so the thumbnail is an average, not a few sampled pixels.
+  const mid = new OffscreenCanvas(THUMB * 4, THUMB * 4);
+  const mctx = mid.getContext("2d");
+  mctx.imageSmoothingQuality = "high";
+  mctx.drawImage(bmp, 0, 0, THUMB * 4, THUMB * 4);
+  const aspect = bmp.width / bmp.height;
+  bmp.close();
+  const small = new OffscreenCanvas(THUMB, THUMB);
+  const sctx = small.getContext("2d", { willReadFrequently: true });
+  sctx.imageSmoothingQuality = "high";
+  sctx.drawImage(mid, 0, 0, THUMB, THUMB);
+  const d = sctx.getImageData(0, 0, THUMB, THUMB).data;
+  const v = new Float32Array(THUMB * THUMB * 3);
+  for (let i = 0, j = 0; i < d.length; i += 4) { v[j++] = d[i]; v[j++] = d[i + 1]; v[j++] = d[i + 2]; }
+  let mean = 0;
+  for (const x of v) mean += x;
+  mean /= v.length;
+  let norm = 0;
+  for (let i = 0; i < v.length; i++) { v[i] -= mean; norm += v[i] * v[i]; }
+  norm = Math.sqrt(norm) || 1;
+  for (let i = 0; i < v.length; i++) v[i] /= norm;
+  return { v, aspect };
+}
+
+// 1 = the same picture. Different shapes can't be the same picture.
+function printSimilarity(a, b) {
+  if (Math.abs(Math.log(a.aspect / b.aspect)) > 0.05) return 0;
+  let dot = 0;
+  for (let i = 0; i < a.v.length; i++) dot += a.v[i] * b.v[i];
+  return dot;
+}
+
+async function isReferencePicture(dataUrl) {
+  if (!library.length) return false;
+  const p = await picturePrint(dataUrl);
+  for (const ref of library) {
+    if (!refPrints.has(ref.id)) {
+      try { refPrints.set(ref.id, await picturePrint(ref.base64)); } catch { refPrints.set(ref.id, null); }
+    }
+    const rp = refPrints.get(ref.id);
+    if (rp && printSimilarity(p, rp) >= REF_MATCH_MIN) return true;
+  }
+  return false;
+}
+
 // Saves one finished image to the chosen destination.
 // Resolves { ok: true } or { ok: false, error, needsAuth, duplicateOf }.
 async function saveImage(url, serialNum, rawPromptText) {
-  if (!url.startsWith("http") && !url.startsWith("blob:")) {
-    let origin = FLOW_BASE;
-    try {
-      const activeUrl = (await getActiveTab())?.url;
-      if (activeUrl) origin = new URL(activeUrl).origin;
-    } catch { /* fall back to FLOW_BASE */ }
-    url = origin + url;
-  }
   const filename = fileNameFor(serialNum, rawPromptText);
   let reserved = null;
 
   try {
-    // Flow's image URLs only load with the page's cookies, so the content script fetches it.
-    const res = await sendToFlowTab({ type: "NEXUS_FETCH_IMAGE", url });
-    if (!res?.base64) return { ok: false, error: res?.error || "Couldn't read the image from Flow." };
+    let base64;
+    try { base64 = await fetchFlowImage(url); } catch (e) { return { ok: false, error: e.message }; }
+    fetchedImages.delete(url);
+    const res = { base64 };
 
     const hash = await sha256Hex(res.base64);
     for (const [idx, h] of savedHashes) {
@@ -817,6 +888,32 @@ function refreshPushAllButton() {
   }
 }
 
+// Grid srcs, newest first -> the first `want` that aren't character references. Each image is
+// downloaded once here and kept for the save. One that can't be read is kept (its save will
+// say why) rather than guessed to be a reference.
+async function withoutReferences(srcs, want) {
+  const kept = [];
+  let skippedRefs = 0;
+  if (!library.length) return { kept: srcs.slice(0, want), skippedRefs };
+  const BATCH = 4;
+  for (let i = 0; i < srcs.length && kept.length < want; i += BATCH) {
+    const batch = srcs.slice(i, i + BATCH);
+    const isRef = await Promise.all(batch.map(async (src) => {
+      try {
+        const data = await fetchFlowImage(src);
+        fetchedImages.set(src, data);
+        return await isReferencePicture(data);
+      } catch { return false; }
+    }));
+    batch.forEach((src, j) => {
+      if (isRef[j]) { skippedRefs++; fetchedImages.delete(src); }
+      else if (kept.length < want) kept.push(src);
+      else fetchedImages.delete(src);
+    });
+  }
+  return { kept, skippedRefs };
+}
+
 async function pushAllImages() {
   if (isPushing || isRunning) return;
   const destError = await destinationProblem();
@@ -844,9 +941,11 @@ async function pushAllImages() {
     pushAllBtn.disabled = true;
 
     try {
+      // References sit in the same grid, so look past the prompt count by up to one
+      // tile per library image; they're filtered out below.
       const res = await sendToFlowTab({
         type: "FLOW_COLLECT_ALL_IMAGES",
-        expectedCount: totalPrompts
+        expectedCount: totalPrompts + library.length
       });
       if (!res?.ok || !Array.isArray(res.srcs) || !res.srcs.length) {
         setStatus(res?.error || "No generated images found on the Flow page. Make sure images are visible in the project.");
@@ -855,13 +954,15 @@ async function pushAllImages() {
         return;
       }
 
-      const totalImages = res.srcs.length;
-      log(`Found ${totalImages} image(s) on Flow page for ${totalPrompts} prompt(s).`);
+      setStatus(`Found ${plural(res.srcs.length, "image")}. Leaving out your character references…`);
+      const { kept, skippedRefs } = await withoutReferences(res.srcs, totalPrompts);
+      const totalImages = kept.length;
+      log(`Found ${res.srcs.length} image(s) on Flow page, ${skippedRefs} of them references, for ${totalPrompts} prompt(s).`);
 
       // Google Flow renders newest at top, oldest at bottom.
       // Take the newest N images (where N = totalPrompts) and reverse to match prompts 0..N-1:
       const count = Math.min(totalImages, totalPrompts);
-      const matchedSrcs = res.srcs.slice(0, count).reverse();
+      const matchedSrcs = kept.slice(0, count).reverse();
 
       // Ensure promptStatuses is populated
       if (promptStatuses.length !== totalPrompts) {
@@ -880,8 +981,11 @@ async function pushAllImages() {
         .map((item, idx) => ({ item, idx }))
         .filter(({ item }) => item?.url && item.status !== "done" && item.status !== "saving");
 
+      const refNote = skippedRefs ? ` (left out ${plural(skippedRefs, "character reference")})` : "";
       if (totalImages < totalPrompts) {
-        setStatus(`Found ${totalImages} images for ${totalPrompts} prompts. Pushing available images…`);
+        setStatus(`Found ${totalImages} images for ${totalPrompts} prompts${refNote}. Pushing available images…`);
+      } else if (skippedRefs) {
+        setStatus(`Found ${totalImages} images${refNote}.`);
       }
     } catch (e) {
       setStatus(`Failed to scan Flow tab: ${e.message || e}`);
